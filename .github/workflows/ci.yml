@@ -38,7 +38,7 @@ jobs:
         run: uv run --frozen pytest -q
 
   integration:
-    name: runtime integration (herdr ${{ env.HERDR_VERSION }})
+    name: runtime integration (herdr)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
