@@ -7,4 +7,6 @@ build/
 *.egg-info/
 openspec/
 .agents/
-.github/
+.github/agents/
+.github/prompts/
+.github/skills/
