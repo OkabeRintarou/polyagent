@@ -1,0 +1,411 @@
+"""``PolyAgent`` entry object: session checks, server lifecycle, ownership markers and cleanup.
+
+Design D2 (session protection), D3 (server start/stop), D4 (ownership marker, cleanup).
+Agent start/attach/list arrive with task group 6.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import re
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Callable, Iterable, TypeVar
+
+from . import herdr as H
+from . import locks
+from ._rules import AGENT_NAME_RE, DISCUSSION_ID_RE, validate_discussion_id
+from .errors import HerdrError, HerdrUnavailableError, InvalidConfigError, PolyAgentError
+from .kinds import KINDS, is_config_env
+
+log = logging.getLogger("polyagent")
+T = TypeVar("T")
+
+# ---- server environment (D3) -------------------------------------------------
+
+SERVER_ENV_NAMES = frozenset(
+    {
+        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TZ", "TERM", "TMPDIR",
+        "HERDR_CONFIG_PATH",
+        "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
+        "http_proxy", "https_proxy", "no_proxy", "all_proxy",
+        "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+    }
+)
+SERVER_ENV_PREFIXES = ("LC_", "XDG_")
+PASSTHROUGH_FORBIDDEN_NAMES = frozenset({"BASH_ENV", "ENV", "NODE_OPTIONS"})
+PASSTHROUGH_FORBIDDEN_PREFIXES = ("LD_", "HERDR_")
+_ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+SERVER_PROBE_INTERVAL = 0.2
+SERVER_LOCK_SLACK = 5.0  # extra wait for server.lock beyond the holder's own start timeout
+
+
+def check_passthrough(names: Iterable[str]) -> tuple[str, ...]:
+    """Validate ``server_env_passthrough``; raise ``InvalidConfigError`` for unsafe names."""
+    if isinstance(names, str):
+        raise InvalidConfigError("server_env_passthrough must be a sequence of variable names, not a string")
+    out: list[str] = []
+    for name in names:
+        if not isinstance(name, str) or not _ENV_NAME_RE.fullmatch(name):
+            raise InvalidConfigError(f"invalid environment variable name {name!r}")
+        if (
+            name in PASSTHROUGH_FORBIDDEN_NAMES
+            or name.startswith(PASSTHROUGH_FORBIDDEN_PREFIXES)
+            or is_config_env(name)
+        ):
+            raise InvalidConfigError(f"{name} must not be passed through to the herdr server")
+        out.append(name)
+    return tuple(out)
+
+
+def server_env(passthrough: Iterable[str], base: dict[str, str] | None = None) -> dict[str, str]:
+    src = os.environ if base is None else base
+    keep = set(passthrough)
+    return {
+        k: v
+        for k, v in src.items()
+        if k in SERVER_ENV_NAMES or k.startswith(SERVER_ENV_PREFIXES) or k in keep
+    }
+
+
+# ---- ownership marker (D4) -----------------------------------------------------
+
+MARKER_PREFIX = "polyagent"
+MARKER_VERSION = "1"
+POLICY_CODES = {"read_only": "ro", "full_auto": "fa"}
+_POLICY_BY_CODE = {v: k for k, v in POLICY_CODES.items()}
+_SID_RE = re.compile(r"(?!-$)[A-Za-z0-9._-]{1,64}")
+
+
+@dataclass(frozen=True)
+class Marker:
+    """``polyagent:1:<name>:<kind>:<ro|fa>:<sid|->:<disc|->:<created_unix>`` stored in the workspace label."""
+
+    name: str
+    kind: str
+    policy: str
+    created: int
+    session_id: str | None = None
+    discussion_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not AGENT_NAME_RE.fullmatch(self.name):
+            raise InvalidConfigError(f"invalid agent name {self.name!r}")
+        if self.kind not in KINDS:
+            raise InvalidConfigError(f"unknown kind {self.kind!r}")
+        if self.policy not in POLICY_CODES:
+            raise InvalidConfigError(f"unknown policy {self.policy!r}")
+        if self.session_id is not None and not (isinstance(self.session_id, str) and _SID_RE.fullmatch(self.session_id)):
+            raise InvalidConfigError(f"invalid session id {self.session_id!r}")
+        if self.discussion_id is not None and not (
+            isinstance(self.discussion_id, str) and DISCUSSION_ID_RE.fullmatch(self.discussion_id)
+        ):
+            raise InvalidConfigError(f"invalid discussion id {self.discussion_id!r}")
+        if not isinstance(self.created, int) or isinstance(self.created, bool) or self.created < 0:
+            raise InvalidConfigError("created must be a non-negative unix timestamp")
+
+    def encode(self) -> str:
+        return ":".join(
+            [
+                MARKER_PREFIX,
+                MARKER_VERSION,
+                self.name,
+                self.kind,
+                POLICY_CODES[self.policy],
+                self.session_id or "-",
+                self.discussion_id or "-",
+                str(self.created),
+            ]
+        )
+
+    @classmethod
+    def parse(cls, label: object) -> "Marker | None":
+        """Return the marker encoded in ``label``, or ``None`` if it is not exactly a polyagent marker."""
+        if not isinstance(label, str):
+            return None
+        parts = label.split(":")
+        if len(parts) != 8 or parts[0] != MARKER_PREFIX or parts[1] != MARKER_VERSION:
+            return None
+        _, _, name, kind, pol, sid, disc, created = parts
+        if pol not in _POLICY_BY_CODE or not created.isdigit() or not created.isascii():
+            return None
+        try:
+            return cls(
+                name=name,
+                kind=kind,
+                policy=_POLICY_BY_CODE[pol],
+                created=int(created),
+                session_id=None if sid == "-" else sid,
+                discussion_id=None if disc == "-" else disc,
+            )
+        except InvalidConfigError:
+            return None
+
+
+@dataclass(frozen=True)
+class OwnedWorkspace:
+    workspace_id: str
+    marker: Marker
+    live: bool
+
+
+def _live_workspaces(agents: list[dict[str, Any]]) -> dict[str, set[str | None]]:
+    """Map live agent name -> workspace ids hosting it (``None`` when herdr omits the id)."""
+    live: dict[str, set[str | None]] = {}
+    for a in agents:
+        name = a.get("name")
+        if isinstance(name, str) and name:
+            wid = a.get("workspace_id")
+            live.setdefault(name, set()).add(wid if isinstance(wid, str) else None)
+    return live
+
+
+def _is_live(live: dict[str, set[str | None]], name: str, workspace_id: str) -> bool:
+    where = live.get(name, set())
+    return workspace_id in where or None in where
+
+
+# ---- entry object --------------------------------------------------------------
+
+
+class PolyAgent:
+    """Library entry object bound to one named, non-default herdr session.
+
+    Construction validates the session name and ``server_env_passthrough`` before any herdr
+    call, checks the herdr version, then starts a headless server for the session if none runs.
+    """
+
+    def __init__(
+        self,
+        session: str = "polyagent",
+        herdr_path: str | None = None,
+        server_start_timeout: float = 15,
+        server_env_passthrough: Iterable[str] = (),
+    ):
+        self._session = H.validate_session_name(session)
+        self._passthrough = check_passthrough(server_env_passthrough)
+        if (
+            isinstance(server_start_timeout, bool)
+            or not isinstance(server_start_timeout, (int, float))
+            or server_start_timeout <= 0
+        ):
+            raise InvalidConfigError("server_start_timeout must be a positive number of seconds")
+        self._server_start_timeout = float(server_start_timeout)
+        binary = H.find_herdr(herdr_path)
+        H.check_version(binary)
+        self._herdr = H.HerdrClient(self._session, binary)
+        self._server_mutex = threading.Lock()
+        self.ensure_server()
+
+    @property
+    def session(self) -> str:
+        return self._session
+
+    @property
+    def herdr(self) -> H.HerdrClient:
+        return self._herdr
+
+    # ---- server (D3) ----------------------------------------------------
+
+    def ensure_server(self) -> None:
+        """Start this session's headless server unless it is already running (one server per session)."""
+        with self._server_mutex:
+            if self._herdr.is_running():
+                return
+            try:
+                lock = locks.acquire_server_lock(self._session, self._server_start_timeout + SERVER_LOCK_SLACK)
+            except HerdrUnavailableError:
+                # Whoever holds server.lock may just have finished starting it.
+                if self._herdr.is_running():
+                    return
+                raise
+            with lock:
+                if self._herdr.is_running():
+                    return
+                self._spawn_server()
+
+    def _spawn_server(self) -> None:
+        argv = self._herdr.argv(["server"])
+        log.info("starting herdr server for session %s", self._session)
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=server_env(self._passthrough),
+                cwd=str(locks.user_home()),
+                start_new_session=True,
+            )
+        except OSError as e:
+            raise H.launch_error(e, argv) from e
+        threading.Thread(target=proc.wait, name=f"herdr-server-reaper-{proc.pid}", daemon=True).start()
+        deadline = time.monotonic() + self._server_start_timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(SERVER_PROBE_INTERVAL, remaining))
+            if self._probe(max(0.1, min(H.PROBE_LIMIT, deadline - time.monotonic()))):
+                return
+            code = proc.poll()
+            if code is not None:
+                # Lost a race against another server ("already running") is fine if it answers.
+                if self._probe(max(0.1, min(H.PROBE_LIMIT, deadline - time.monotonic()))):
+                    return
+                raise HerdrUnavailableError(
+                    H.SERVER_START_FAILED,
+                    f"herdr server for session {self._session!r} exited with status {code} before it became "
+                    f"available; {self._server_log_hint()}",
+                    argv,
+                )
+        raise HerdrUnavailableError(
+            H.SERVER_START_TIMEOUT,
+            f"herdr server for session {self._session!r} did not come up within "
+            f"{self._server_start_timeout:g}s; {self._server_log_hint()}",
+            argv,
+        )
+
+    def _probe(self, limit: float) -> bool:
+        try:
+            return self._herdr.is_running(limit=limit)
+        except HerdrUnavailableError as e:
+            if e.code == H.UNRESPONSIVE:
+                return False
+            raise
+
+    def _server_log_hint(self) -> str:
+        try:
+            for s in self._herdr.session_list():
+                if s.get("name") == self._session and isinstance(s.get("session_dir"), str):
+                    return f"see {os.path.join(s['session_dir'], 'herdr-server.log')}"
+        except PolyAgentError:
+            pass
+        return "see herdr-server.log in the session directory reported by `herdr session list --json`"
+
+    def _with_server(self, fn: Callable[[], T]) -> T:
+        """Run an entry operation; on ``server_not_running`` start the server once and retry."""
+        try:
+            return fn()
+        except HerdrUnavailableError as e:
+            if e.code != H.SERVER_NOT_RUNNING:
+                raise
+        self.ensure_server()
+        return fn()
+
+    def stop_server(self) -> None:
+        """Stop this session's server; every agent in the session (of any process) is killed."""
+        entries = [s for s in self._herdr.session_list() if s.get("name") == self._session]
+        if any(s.get("default") is not False for s in entries):
+            raise HerdrError(
+                H.DEFAULT_SESSION_REFUSED,
+                f"herdr reports session {self._session!r} as the default session; refusing to stop it",
+            )
+        if not entries:
+            return
+        self._herdr.session_stop()
+
+    # ---- ownership (D4) -------------------------------------------------
+
+    def _owned(self) -> list[OwnedWorkspace]:
+        workspaces = self._herdr.workspace_list()
+        live = _live_workspaces(self._herdr.agent_list())
+        out = []
+        for ws in workspaces:
+            marker = Marker.parse(ws.get("label"))
+            if marker is None:
+                continue
+            wid = ws.get("workspace_id")
+            if not isinstance(wid, str) or not wid:
+                raise HerdrError(H.BAD_RESPONSE, f"workspace without workspace_id: {ws!r}"[:500])
+            out.append(OwnedWorkspace(wid, marker, _is_live(live, marker.name, wid)))
+        return out
+
+    def owned_workspaces(self) -> list[OwnedWorkspace]:
+        """Workspaces carrying an intact polyagent marker, with whether their agent is alive."""
+        return self._with_server(self._owned)
+
+    def cleanup(self, *, older_than: datetime | float | None = None, discussion_id: str | None = None) -> list[str]:
+        """Close polyagent workspaces and return the agent names whose workspace was closed.
+
+        Without arguments: close orphans (the marker's agent is not alive in that workspace),
+        skipping any whose agent lock is held (being started or asked); the lock is taken first
+        and the orphan state re-checked under it. With ``older_than`` and/or ``discussion_id``:
+        close every matching workspace, live or not, without looking at locks. Either way the
+        label is re-read right before closing and must still be the same marker.
+
+        If closing some workspace fails, the others are still processed and the first error is
+        raised afterwards with the list of closed names attached as ``error.closed``.
+        """
+        if discussion_id is not None:
+            validate_discussion_id(discussion_id)
+        cutoff = _to_unix(older_than)
+        filtered = cutoff is not None or discussion_id is not None
+        return self._with_server(lambda: self._cleanup(filtered, cutoff, discussion_id))
+
+    def _cleanup(self, filtered: bool, cutoff: float | None, discussion_id: str | None) -> list[str]:
+        closed: list[str] = []
+        errors: list[PolyAgentError] = []
+        for ow in self._owned():
+            m = ow.marker
+            if cutoff is not None and not m.created < cutoff:
+                continue
+            if discussion_id is not None and m.discussion_id != discussion_id:
+                continue
+            if not filtered and ow.live:
+                continue
+            try:
+                if filtered:
+                    done = self._close_if_marked(ow)
+                else:
+                    lock = locks.try_lock(self._session, m.name)
+                    if lock is None:
+                        continue
+                    with lock:
+                        done = self._close_if_marked(ow, require_orphan=True)
+            except PolyAgentError as e:
+                log.warning("cleanup: closing workspace %s (agent %s) failed: %s", ow.workspace_id, m.name, e)
+                errors.append(e)
+                continue
+            if done:
+                closed.append(m.name)
+        if errors:
+            first = errors[0]
+            first.closed = closed  # type: ignore[attr-defined]
+            raise first
+        return closed
+
+    def _close_if_marked(self, ow: OwnedWorkspace, require_orphan: bool = False) -> bool:
+        """Re-read the label (and liveness) right before closing; close only if unchanged."""
+        try:
+            current = Marker.parse(self._herdr.workspace_get(ow.workspace_id).get("label"))
+        except HerdrError as e:
+            if e.code == H.WORKSPACE_NOT_FOUND:
+                return False
+            raise
+        if current != ow.marker:
+            return False
+        if require_orphan and _is_live(_live_workspaces(self._herdr.agent_list()), ow.marker.name, ow.workspace_id):
+            return False
+        try:
+            self._herdr.workspace_close(ow.workspace_id)
+        except HerdrError as e:
+            if e.code == H.WORKSPACE_NOT_FOUND:
+                return False
+            raise
+        log.info("closed workspace %s of agent %s (session %s)", ow.workspace_id, ow.marker.name, self._session)
+        return True
+
+
+def _to_unix(value: datetime | float | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    raise InvalidConfigError("older_than must be a datetime or a unix timestamp")
