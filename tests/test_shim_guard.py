@@ -21,7 +21,7 @@ def guard(tmp_path):
     reached = tmp_path / "reached.log"
     real = script(tmp_path, f"printf '%s\\n' \"$*\" >> {reached}\necho '{{\"result\":{{}}}}'\n", name="real-herdr")
     shim = build_shim(tmp_path / "shim", real, NAME, tmp_path / "calls.log", tmp_path / "refused.log")
-    env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_")}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") and k != "XDG_CONFIG_HOME"}
     env["PATH"] = f"{shim.parent}{os.pathsep}{env.get('PATH', '')}"
 
     def run(*args, extra_env=None, via_path=False):
