@@ -1,0 +1,31 @@
+echo __lab_ready_$((40+2))
+user@host:/tmp/pa-lab/repo$ echo __lab_ready_$((40+2))
+__lab_ready_42
+user@host:/tmp/pa-lab/repo$ export CLAUDE_CONFIG_DIR=/tmp/pa-lab/ch-np; unset ANT
+HROPIC_CUSTOM_HEADERS; set -a; . /tmp/pa-lab/prov.env; set +a; echo __pre_$((5+5))
+__pre_10
+user@host:/tmp/pa-lab/repo$ claude --restricted --strict-mcp-config --model claude-sonnet-4-5 --s
+ession-id 970460d7-174a-436e-a67f-1f66de826168
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Sonnet 4.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/pa-lab/repo
+
+
+❯ Create a file named dm.txt containing hi using your file writing tool, then reply DONE.
+
+  Thought for 6s (ctrl+o to expand)
+
+● Write(dm.txt)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Create file
+ dm.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  1 hi
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to create dm.txt?
+ ❯ 1. Yes
+   2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)
+   3. No
+
+ Esc to cancel · Tab to amend

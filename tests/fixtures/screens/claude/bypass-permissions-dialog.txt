@@ -1,0 +1,22 @@
+echo __lab_ready_$((40+2))
+user@host:/tmp/pa-lab/repo$ echo __lab_ready_$((40+2))
+__lab_ready_42
+user@host:/tmp/pa-lab/repo$ claude --dangerously-skip-permissions --disallowedTools AskUserQuesti
+on --model sonnet --session-id 2c4e6643-a719-491f-8e1f-1c9224bc39cf
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  WARNING: Claude Code running in Bypass Permissions mode
+
+  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous
+  commands.
+  This mode should only be used in a sandboxed container/VM that has restricted internet access and can easily be
+  restored if damaged.
+
+  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.
+
+  https://code.claude.com/docs/en/security
+
+  ❯ No, exit
+    Yes, I accept
+
+  Enter to confirm · Esc to cancel

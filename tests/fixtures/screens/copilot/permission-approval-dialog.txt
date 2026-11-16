@@ -1,0 +1,25 @@
+                                                                                                                      ┃
+ ⌄ Thought for 1s                                                                                                     ┃
+ │ The user is asking me to run a shell command `touch preset.txt` and reply DONE. This is straightforward - I should ┃
+ │ use the bash tool to execute this command.                                                                         ┃
+ │                                                                                                                    ┃
+ │ Let me run this command in the current working directory which is `/tmp/pa-lab/repo`.             ┃
+                                                                                                                      ┃
+ ○ Shell Create preset.txt file                                                                                       ┃
+   touch preset.txt                                                                                                   ┃
+                                                                                                                      ┃
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Create preset.txt file                                                                                              │
+│ ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────── │
+│ ╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮ │
+│ │ touch preset.txt                                                                                                │ │
+│ ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯ │
+│                                                                                                                     │
+│ Do you want to run this command?                                                                                    │
+│                                                                                                                     │
+│ ❯ 1. Yes                                                                                                            │
+│   2. Yes, and don't ask again for `touch` in this repo (/tmp/pa-lab/repo)                          │
+│   3. No, and tell Copilot what to do differently (Esc to stop)                                                      │
+│                                                                                                                     │
+│ ↑/↓ to navigate · enter to select · esc to cancel                                                                   │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯

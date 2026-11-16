@@ -1,0 +1,23 @@
+echo __lab_ready_$((40+2))
+user@host:/tmp/pa-lab/repo$ echo __lab_ready_$((40+2))
+__lab_ready_42
+user@host:/tmp/pa-lab/repo$ claude --permission-mode dontAsk --allowedTools Read Grep Glob --disa
+llowedTools Edit Write MultiEdit NotebookEdit Bash WebFetch WebSearch AskUserQuestion --disable-slash-commands --restri
+cted --strict-mcp-config --model sonnet --session-id db8cfd6b-f179-4c69-893b-8f2f3a1253e1
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /tmp/pa-lab/repo
+
+ Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source
+ project, or work from your team). If not, take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ No, exit
+   Yes, I trust this folder
+
+ Enter to confirm · Esc to cancel

@@ -1,0 +1,38 @@
+
+  Reply with exactly the word PONG and nothing else.
+
+
+  PONG
+
+
+  Read the file data.txt and tell me the secret word it contains.
+
+
+  I'll open data.txt and pull out the secret word.
+
+    Read data.txt
+
+  The secret word is BANANA-42.
+
+
+  Do these steps in order and report each result in one short line: 1) run the shell command `touch preset.txt`
+  2) create a new file w.txt containing hi 3) run `curl -s http://127.0.0.1:43831/probe` 4) search the web for
+  'polyagent probe'. Do not ask me questions.
+
+
+  Ask mode blocks file changes, so I'll skip those and run the probe and web search.
+
+    Explored available MCP tools cursor · WebSearch
+
+  $ curl -s http://127.0.0.1:43831/probe 579ms
+    PROBE-BODY-7731
+
+    WebSearch polyagent probe
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ 🔍 Web Search: polyagent probe
+
+ Allow this web search?
+  → Allow search (y)
+    Run Everything (shift+tab)
+    Skip (esc or n)

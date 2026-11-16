@@ -122,3 +122,74 @@ $ herdr --session $S workspace close w1         # rc=0
 ```
 
 `pane run` 成功时没有输出，因此库对 `pane run`、`workspace close`、`agent send-keys` 只看退出码，不解析 JSON。
+
+## 任务 3.1（agent 启动相关，阶段 2）
+
+环境：herdr 0.9.5；codex 0.167.0、copilot 1.0.112、claude 2.1.322、cursor-agent 2026.11.10。
+全部在随机临时 session 中进行，agent 的配置目录隔离到 0700 临时目录（`CODEX_HOME`、`COPILOT_HOME`、
+`CLAUDE_CONFIG_DIR`、`CURSOR_CONFIG_DIR`/`CURSOR_DATA_DIR`，cursor 另在 pane 内导出 `XDG_CONFIG_HOME`）。
+
+### 启动命令的输入形式与 `AGENT_ARG` 原样传递
+
+herdr 把启动命令作为一行 shell 输入敲进 pane，参数用 POSIX 单引号转义，例如：
+
+```
+$ codex -c 'polyagent_probe=a b (c) "q" '\''r'\'' $(touch PWNED1) ;touch PWNED2 `touch PWNED3` & | > x < * ? ~ $HOME \ end' --no-alt-screen
+```
+
+`pane process-info` 显示的 argv 与传入值逐字节相同（codex、claude、copilot、cursor 都一样），工作目录中没有出现
+`PWNED*` 文件。copilot 的 `--name` 拒绝含 `"` 的值（这是 copilot 自己的校验，与 herdr 无关）。
+cursor 的前台进程是 `cursor-agent --use-system-ca <…>/index.js <args>`。
+
+### 别名与函数
+
+因为启动命令经 shell 解释，pane 中的别名和函数会改变实际 argv：
+
+| pane 中的定义 | `agent start` 后的 argv |
+|---|---|
+| `alias codex='codex --dangerously-bypass-approvals-and-sandbox'` | `codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen` |
+| `claude(){ command claude --dangerously-skip-permissions "$@"; }` | `claude --dangerously-skip-permissions` |
+| `copilot(){ command copilot --yolo "$@"; }` | `copilot --yolo` |
+
+执行 `unalias codex claude copilot; unset -f codex claude copilot` 后再启动，argv 恢复为 `codex --no-alt-screen`、`claude`、`copilot`。
+
+### 准备脚本之后立即 `agent start`
+
+连续 3 轮：`source <0600 文件> && rm -f <文件> && echo __pa_env_ok_$((1+1)) || echo __pa_env_fail_$((1+1))`，
+`pane wait-output --regex '__pa_env_(ok|fail)_2'` 命中后立即 `agent start codex`：3/3 成功（约 3.8 s），
+临时文件已删除，agent 进程环境中有脚本导出的变量。
+
+### agent 退出后
+
+对 agent 进程发 SIGTERM 后：`agent get <name>` → `agent_not_found`；`agent list` 不再包含它（也没有无名条目）；
+workspace 仍在；pane 前台回到 `/bin/bash`。
+
+### 名字冲突
+
+```
+$ herdr --session $S agent start dup --kind codex --pane w5:p1 ...
+stderr: {"error":{"code":"agent_name_taken","message":"agent name dup is already used; candidates: terminal_id=... pane_id=w4:p1 workspace_id=w4 ..."}}
+```
+
+### `agent send-keys`
+
+| 输入 | 结果 |
+|---|---|
+| `hello`、`/allow-all`、`x y` | `invalid_key`，没有输入 |
+| `a b`（两个单字符参数） | 接受，输入框出现 `ab` |
+| `ctrl+u`、`up`、`tab`、`Escape`、`esc`、`C-c` | 接受 |
+
+herdr 接受单个可打印字符，因此可以逐字输入命令；库的 `send_keys` 只放行命名按键是必要的。
+codex 空闲时收到 `C-c` 会直接退出（打印 `resume <id>`）。
+
+### codex 的后台 app-server 进程
+
+不带 `--no-daemon` 时，codex 0.167 会从 `CODEX_HOME/packages/app-server-daemon/` 启动两个 `codex app-server` 进程，
+`workspace close` 和 `session stop` 之后它们仍在运行（脱离了 herdr 的进程树）。带 `--no-daemon` 时不产生这类进程。
+
+### 其它
+
+- 服务器环境中的 `XDG_CONFIG_HOME` 会让 herdr 自己把 session 目录移到 `$XDG_CONFIG_HOME/herdr/sessions/`，
+  客户端（未设该变量）随即连不上 server。cursor 的隔离因此只能在 pane 内导出 `XDG_CONFIG_HOME`。
+- herdr 对 copilot 的状态识别：每次 `agent prompt --wait` 都返回 `agent_prompt_stalled`，且 copilot 工作中 `agent get` 仍报 `idle`。
+- herdr 对 cursor：启动时目录信任对话框仍在屏幕上，`agent start` 已返回就绪。

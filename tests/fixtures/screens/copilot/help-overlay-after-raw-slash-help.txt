@@ -1,0 +1,18 @@
+trl+x → v)                                             ┃
+    ctrl+x → b            move current task to background                                                             ┃
+    ctrl+x → g            collapse or expand the autopilot goal panel                                                 ┃
+    ctrl+x → o            open most recent link                                                                       ┃
+                                                                                                                      ┃
+  INPUT                                                                                                               ┃
+                                                                                                                      ┃
+    ctrl+a                go to line start                                                                            ┃
+    ctrl+e                go to line end                                                                              ┃
+    ctrl+h                delete previous character (previous word in local Windows terminals)                        ┃
+    ctrl+w                delete previous word                                                                        ┃
+    ctrl+u                delete from cursor to beginning of line                                                     ┃
+    ctrl+k                delete from cursor to end of line                                                           ┃
+    meta+←/→              move cursor by word                                                                         ┃
+    shift+enter           insert newline (see /terminal-setup)                                                        ┃
+    ctrl+j                insert newline in any terminal (so does \ then enter)                                       ┃
+    ctrl+g                edit prompt in $EDITOR                                                                      ┃
+↑/↓ scroll · esc close
