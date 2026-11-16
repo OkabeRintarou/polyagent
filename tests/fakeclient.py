@@ -59,9 +59,10 @@ class FakeClient:
     # ---- workspaces --------------------------------------------------------------
     def workspace_create(self, cwd: str, label: str) -> dict[str, Any]:
         self._rec("workspace_create", cwd, label)
-        self._n += 1
-        wid = f"w{self._n}"
-        self.workspaces[wid] = {"workspace_id": wid, "label": label, "cwd": cwd}
+        with self.lock:  # PolyAgent.start may run on several threads at once
+            self._n += 1
+            wid = f"w{self._n}"
+            self.workspaces[wid] = {"workspace_id": wid, "label": label, "cwd": cwd}
         # Shape recorded in tests/fixtures/herdr/README.md (task 13.13).
         return {"type": "workspace_created", "workspace": dict(self.workspaces[wid]),
                 "root_pane": {"pane_id": f"{wid}:p1", "workspace_id": wid, "cwd": cwd, "agent_status": "unknown"}}

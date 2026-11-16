@@ -587,3 +587,28 @@ def test_log_binding_follows_the_agent_process_environment(pa, client, tmp_path,
                     pane_id=agent.pane_id, label=agent._label, session_id=agent._session_id)
     environ["v"] = b"PATH=/bin\0"
     assert other._config_dir() == locks.user_home() / ".copilot"
+
+
+def test_start_can_run_on_several_threads_at_once(pa, client, tmp_path):
+    # The discussion engine starts its members in parallel through one PolyAgent (design D16).
+    barrier = threading.Barrier(2, timeout=5)
+    out, errors = {}, []
+
+    def start(name):
+        try:
+            barrier.wait()
+            out[name] = pa.start(AgentSpec(kind="codex"), tmp_path, name=name)
+        except BaseException as e:  # noqa: BLE001 - reported below
+            errors.append(e)
+
+    threads = [threading.Thread(target=start, args=(n,)) for n in ("alpha", "beta")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(10)
+    assert errors == [] and set(out) == {"alpha", "beta"}
+    assert out["alpha"].workspace_id != out["beta"].workspace_id and out["alpha"].pane_id != out["beta"].pane_id
+    started = {a[0]: a[2] for a in client.args_of("agent_start")}
+    assert started == {"alpha": out["alpha"].pane_id, "beta": out["beta"].pane_id}
+    labels = {Marker.parse(a[1]).name for a in client.args_of("workspace_create")}
+    assert labels == {"alpha", "beta"}

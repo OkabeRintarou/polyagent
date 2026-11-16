@@ -22,6 +22,8 @@ from .errors import (
 from .agent import Agent, Reply
 from .manager import PolyAgent
 from .spec import AgentSpec, ClaudeProvider, ToolPolicy
+from .template import DEFAULT_TEMPLATE, SummaryTemplate
+from .discussion import Discussion, DiscussionRecord, Event, Member, Message, Participant
 
 __version__ = "0.1.0"
 
@@ -31,6 +33,14 @@ __all__ = [
     "AgentSpec",
     "ClaudeProvider",
     "ToolPolicy",
+    "SummaryTemplate",
+    "DEFAULT_TEMPLATE",
+    "Discussion",
+    "Participant",
+    "DiscussionRecord",
+    "Member",
+    "Message",
+    "Event",
     "AgentBlockedError",
     "AgentBusyError",
     "AgentNameConflictError",
