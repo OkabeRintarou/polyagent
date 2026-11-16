@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import threading
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -27,8 +28,11 @@ class Judgement:
 
 
 def prompt_digest(text: str) -> str:
-    """Digest of a prompt as the logs record it (surrounding whitespace dropped: codex and claude
-    strip leading blanks, D10). Pending turns carry this instead of the prompt text (D1)."""
+    """Digest of a prompt as the logs record it: surrounding whitespace dropped (codex and claude strip
+    leading blanks, D10) and Unicode format characters (category Cf: BOM, zero-width, direction marks)
+    removed, because claude drops them from the input (phase-5 finding). Pending turns carry this
+    instead of the prompt text (D1)."""
+    text = "".join(ch for ch in text if unicodedata.category(ch) != "Cf")
     return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
 
 

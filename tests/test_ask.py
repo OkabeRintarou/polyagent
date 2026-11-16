@@ -5,6 +5,7 @@ the task-3.x samples.
 """
 
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -179,7 +180,7 @@ def test_timeout_carries_a_json_pending_without_the_prompt(tmp_path):
     # Scenario: 回合信息不含 prompt — no prompt text, no echo key, no log path (D11).
     assert "SECRET-PROMPT" not in json.dumps(e.pending) and "launch code" not in json.dumps(e.pending)
     assert set(e.pending) == {"v", "agent", "kind", "sid", "digest", "source", "mark"}
-    assert e.diagnostics == "diagnostic text" and e.status == "working"
+    assert e.diagnostics == "agent: claude\nstate: working" and e.status == "working"
     assert "a" in c.agents
 
 
@@ -1007,3 +1008,38 @@ def test_empty_baseline_with_count_zero_is_accepted(tmp_path):
                "source": "screen", "baseline": [], "count": 0, "echo": ["q"]}
     c.recent = "> q\nanswer\n→ Add a follow-up\n"
     assert agent.wait_reply(pending, 2).text == "answer"
+
+
+def test_timeout_diagnostics_keep_only_the_detection_result(tmp_path):
+    """Task 7.11 / review C10: the real `agent explain` output recorded in tests/fixtures/herdr/README.md;
+    its `evidence:` line quotes the screen (here with the prompt's echo), `manifest:` names a home path.
+    Only agent/state/rule stay, in the diagnostics, the message and the repr."""
+    readme = (Path(__file__).parent / "fixtures" / "herdr" / "README.md").read_text()
+    sample = readme.split("agent: copilot\n", 1)[1].split("```", 1)[0]
+    real = "agent: copilot\n" + "\n".join(line.strip() for line in sample.splitlines())
+    real = real.replace("[Current]", "> SECRET-PROMPT-ECHO [Current]")
+    assert "evidence:" in real and "manifest:" in real
+    c, agent, path = make(tmp_path)
+    c.explain = {"explanation": real}
+
+    def on_prompt(fake, name, text, wait):
+        claude_user(path, text)
+        fake.set_status(name, "working")
+
+    c.on_prompt = on_prompt
+    with pytest.raises(AgentTimeoutError) as ei:
+        agent.ask("SECRET-PROMPT-ECHO", 0.3)
+    e = ei.value
+    assert e.diagnostics == ("agent: copilot\nstate: blocked\n"
+                             "rule: selection_blocker (region=whole_recent priority=300)")
+    for text in (e.diagnostics, str(e), repr(e)):
+        assert "SECRET-PROMPT-ECHO" not in text and ".local/state" not in text
+
+
+def test_no_diagnostics_when_explain_has_none_of_the_kept_lines(tmp_path):
+    c, agent, path = make(tmp_path)
+    c.explain = {"explanation": "evidence: \"only screen text\"\n"}
+    c.on_prompt = lambda fake, name, text, wait: (claude_user(path, text), fake.set_status(name, "working"))
+    with pytest.raises(AgentTimeoutError) as ei:
+        agent.ask("q", 0.3)
+    assert ei.value.diagnostics is None

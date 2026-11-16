@@ -18,3 +18,4 @@
 | `cursor/websearch-approval-dialog.txt` | ask 模式下的 Web Search 批准：“Allow search (y) / Run Everything (shift+tab) / Skip (esc or n)” | Esc 拒绝 |
 | `cursor/websearch-rejected-after-esc.txt` | 拒绝后该轮继续并给出总结 | — |
 | `cursor/slash-quit-on-second-line.txt` | 引导行之后第二行的 `/quit` 被执行（“Session ended.”） | — |
+| `cursor/first-prompt-before.txt`、`cursor/first-prompt-pong-after.txt` | 阶段 5 的真实屏幕（`recent-unwrapped`）：第一次提问前输入行是 `→ Plan, search, build anything`，提问后变成 `→ Add a follow-up`；两者都是页脚标记 | — |

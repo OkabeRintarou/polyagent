@@ -84,14 +84,24 @@ class ScreenCapture:
         after = self._locate_echo(screen, baseline, echo_lines, count)
         if after is None:
             return None
-        start = 0
-        body = after[start + 1:]
-        # Skip the rest of the echo: the prompt's further lines and the screen's wrapping of long lines.
-        flat = " ".join(" ".join(line.split()) for line in echo_lines)
+        body = after[1:]
+        # Skip the rest of the echo: the prompt's further lines and the screen's wrapping of long lines,
+        # matched in order against what the echo has not shown yet. A reply line that merely occurs
+        # somewhere in the prompt (a one-word answer the prompt asked for) is not part of the echo.
+        flat = " ".join(" ".join(line.split()) for line in echo_lines if line.strip())
+        shown = " ".join(after[0].split())
+        key = self._echo_key(echo_lines)
+        seg = shown[shown.find(" ".join(key.split())):]
+        pos = len(seg) if flat.startswith(seg) else len(" ".join(key.split()))
         while body:
             nxt = next((line for line in body if line.strip()), None)
-            if nxt is None or " ".join(nxt.split()) not in flat:
+            if nxt is None:
                 break
+            words = " ".join(nxt.split())
+            rest = flat[pos:].lstrip()
+            if not rest.startswith(words):
+                break
+            pos = len(flat) - len(rest) + len(words)
             body = body[body.index(nxt) + 1:]
         kept = [line.rstrip() for line in self._content(body) if not TIMESTAMP_RE.match(line)]
         indent = min((len(x) - len(x.lstrip()) for x in kept if x.strip()), default=0)

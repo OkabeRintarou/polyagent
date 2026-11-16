@@ -412,7 +412,10 @@ ADAPTERS: dict[str, KindAdapter] = {
         interrupt_key="esc",
         log_binding=None,
         trust_by_flag=True,
-        footer=(re.compile(r"^\s*→ Add a follow-up"), re.compile(r"\(shift\+tab to cycle\)\s*$")),
+        # The input line starts with "→ ": "→ Plan, search, build anything" before the first prompt,
+        # "→ Add a follow-up" after a turn, and for a moment after a turn the previous prompt itself
+        # ("→ <prompt>", phase-5 run); all of them end the reply region.
+        footer=(re.compile(r"^\s*→ "), re.compile(r"\(shift\+tab to cycle\)\s*$")),
     ),
 }
 

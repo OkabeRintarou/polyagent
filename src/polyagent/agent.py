@@ -92,6 +92,16 @@ class _Source:
         return {"source": "screen", "baseline": list(self.baseline or []), "count": self.count, "echo": echo}
 
 
+# `agent explain` lines kept in errors: its `evidence:` line quotes the screen (which may echo the prompt,
+# D1) and `manifest:` names a path in the user's home; only the detection result is kept (review C10).
+DIAGNOSTIC_FIELDS = ("agent", "state", "rule")
+
+
+def _diagnostics(text: str) -> str | None:
+    kept = [line for line in text.splitlines() if line.split(":", 1)[0].strip() in DIAGNOSTIC_FIELDS]
+    return "\n".join(kept)[:2000] or None
+
+
 def _check_timeout(timeout: object) -> float:
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
         raise InvalidConfigError("timeout must be a finite positive number of seconds")
@@ -579,7 +589,7 @@ class Agent:
     def _timeout(self, src: _Source, digest: str, sent: str, why: str, state: Any) -> AgentTimeoutError:
         try:
             diag = self._h.agent_explain(self.name)
-            diagnostics = str(diag.get("explanation") or diag)[:2000]
+            diagnostics = _diagnostics(str(diag.get("explanation") or ""))
         except HerdrError:
             diagnostics = None
         first = next((line.strip() for line in sent.splitlines() if line.strip()), "")

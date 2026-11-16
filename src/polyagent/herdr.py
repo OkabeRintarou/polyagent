@@ -249,7 +249,9 @@ class HerdrClient:
         return self._get(self.call(*args), "agent", dict, args)
 
     def agent_explain(self, target: str) -> dict[str, Any]:
-        return self.call("agent", "explain", target)
+        """``{"explanation": <text>}``: herdr 0.9.5 prints the explanation as plain text, not JSON
+        (task 13.13)."""
+        return {"explanation": self.text("agent", "explain", target)}
 
     def agent_start(
         self,

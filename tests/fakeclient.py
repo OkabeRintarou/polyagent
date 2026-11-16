@@ -39,7 +39,9 @@ class FakeClient:
     on_keys: Callable[["FakeClient", str, tuple[str, ...]], None] | None = None
     statuses: dict[str, list[str]] = field(default_factory=dict)  # name -> scripted agent_get statuses
     wait_result: Callable[["FakeClient", str, int, tuple[str, ...]], Any] | None = None
-    explain: dict[str, Any] = field(default_factory=lambda: {"explanation": "diagnostic text"})
+    # herdr 0.9.5 prints `agent explain` as text (tests/fixtures/herdr/README.md, task 13.13)
+    explain: dict[str, Any] = field(default_factory=lambda: {"explanation": "agent: claude\nstate: working\n"
+                                                                            "evidence: \"screen text\""})
     lock: threading.Lock = field(default_factory=threading.Lock)
     _n: int = 0
 
@@ -90,7 +92,7 @@ class FakeClient:
 
     def pane_run(self, pane: str, command: str) -> None:
         self._rec("pane_run", pane, command)
-        m = re.match(r"\. (\S+) &&", command)
+        m = re.search(r"(?:^|; )\. (\S+?);", command)
         if m:
             path = m.group(1).strip("'")
             with open(path) as f:

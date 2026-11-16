@@ -49,7 +49,7 @@ def screen(rel):
 
 
 def prep_paths(c):
-    return [re.match(r"\. (\S+) &&", a[1]).group(1).strip("'") for a in c.args_of("pane_run")]
+    return [re.search(r"(?:^|; )\. (\S+?);", a[1]).group(1).strip("'") for a in c.args_of("pane_run")]
 
 
 # ---- 6.1 start flow ------------------------------------------------------------------------------
@@ -82,14 +82,15 @@ def test_read_only_always_prepares(pa, client, tmp_path):
     lines = script.splitlines()
     assert "\\command unalias copilot 2>/dev/null; \\command unset -f copilot 2>/dev/null" in lines
     assert any(line.startswith("\\command unset COPILOT_ALLOW_ALL") for line in lines)
-    assert lines[1] == "{ \\command set +xv; } 2>/dev/null"
+    assert lines[1] == "{ \\command set +xva; } 2>/dev/null"
     exported = lines.index(f"\\command export GH_TOKEN={TOKEN}")
     assert lines[-1] == "return 0"
     # the re-checks (D6) come after the exports: the export took effect (review N3), then the read_only ones
     checks = lines[exported + 1:-1]
-    assert checks[0] == (f'if \\command test "${{GH_TOKEN+x}}" != x || \\command test "$GH_TOKEN" != {TOKEN}; '
-                         "then \\command echo __pa_reason_export_failed_$((1+1)); return 1; fi")
-    assert len(checks) == 4 and all("__pa_reason_" in line for line in checks[1:])
+    assert (f'if \\command test "${{GH_TOKEN+x}}" != x || \\command test "$GH_TOKEN" != {TOKEN}; '
+            "then \\command echo __pa_reason_export_failed_$((1+1)); return 1; fi") in checks
+    assert "__pa_reason_shell_hooks_" in " ".join(lines[:exported]) or "__pa_reason_shell_hooks_" in " ".join(checks)
+    assert all("__pa_reason_" in line for line in checks)
 
 
 def test_read_only_claude_clears_provider_families_then_exports(pa, client, tmp_path):
@@ -106,7 +107,7 @@ def test_read_only_claude_clears_provider_families_then_exports(pa, client, tmp_
 def test_prep_script_runs_in_the_bash_family_shell_with_sentinels(pa, client, tmp_path):
     pa.start(AgentSpec(kind="cursor"), tmp_path)
     (_, command), = client.args_of("pane_run")
-    assert command.startswith(". ") and "__pa_env_ok_$((1+1))" in command and "__pa_env_fail_$((1+1))" in command
+    assert command.startswith("{ \\command trap - DEBUG RETURN ERR; } 2>/dev/null; . ") and "__pa_env_ok_$((1+1))" in command and "__pa_env_fail_$((1+1))" in command
     assert "__pa_env_ok_2" not in command
     (_, _, regex), = client.args_of("pane_wait_output")
     assert regex == "__pa_env_(ok|fail)_2"
@@ -118,7 +119,7 @@ def test_prep_file_is_private(pa, client, tmp_path, monkeypatch):
     orig = client.pane_run
 
     def pane_run(pane, command):
-        path = re.match(r"\. (\S+) &&", command).group(1).strip("'")
+        path = re.search(r"(?:^|; )\. (\S+?);", command).group(1).strip("'")
         seen.append(os.stat(path).st_mode & 0o777)
         orig(pane, command)
 
@@ -188,6 +189,19 @@ def test_read_only_recheck_failure_is_policy_not_supported(pa, client, tmp_path,
     script, = client.prep_scripts
     assert "__pa_reason_executable_shadowed_$((1+1))" in script and "__pa_reason_permission_env_$((1+1))" in script
     assert '${COPILOT_ALLOW_ALL+x}' in script
+
+
+@pytest.mark.parametrize("policy,error", [("read_only", PolicyNotSupportedError), ("full_auto", HerdrError)])
+def test_shell_hooks_reason_depends_on_the_policy(pa, client, tmp_path, policy, error):
+    """Review C9: a shell hook that survives is a policy failure under read_only, an injection failure
+    (prep_failed) otherwise."""
+    client.prep = "reason:shell_hooks"
+    with pytest.raises(error) as ei:
+        pa.start(AgentSpec(kind="copilot", policy=policy, env={"X_TOKEN": TOKEN}), tmp_path)
+    assert "PROMPT_COMMAND" in str(ei.value)
+    if policy == "full_auto":
+        assert ei.value.code == "prep_failed" and not isinstance(ei.value, PolicyNotSupportedError)
+    assert client.workspaces == {}
 
 
 def test_start_timeout_closes_the_workspace(pa, client, tmp_path):
@@ -270,6 +284,21 @@ def test_copilot_trust_dialog_session_only(pa, client, tmp_path):
     pa.start(AgentSpec(kind="copilot"), tmp_path)
     assert [k for _, *k in client.args_of("agent_send_keys")] == [["enter"]]
     assert "1. Yes" in screen("copilot/trust-dialog.txt").split("❯")[-1][:20]
+
+
+def test_state_lagging_behind_an_answered_dialog_is_waited_out(pa, client, tmp_path, quick_dialogs):
+    """Real herdr keeps copilot `blocked` for about a second after the trust dialog left the screen, and
+    `agent wait` without `--until` returns at once on that state (phase 5): start still succeeds."""
+    client.screens = [screen("copilot/trust-dialog.txt"), READY_SCREEN]
+    client.start_status = "blocked"
+
+    def on_keys(fake, name, keys):
+        fake.screens.pop(0)
+        fake.statuses[name] = ["blocked", "blocked", "blocked", "idle"]
+
+    client.on_keys = on_keys
+    agent = pa.start(AgentSpec(kind="copilot"), tmp_path)
+    assert agent.status() == "idle" and len(client.args_of("agent_send_keys")) == 1
 
 
 def test_caller_disabled_auto_trust(pa, client, tmp_path):

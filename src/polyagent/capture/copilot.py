@@ -3,7 +3,8 @@
 Events carrying a top-level ``agentId`` belong to a sub-agent and are ignored everywhere. A turn of
 this prompt runs from its (main) ``user.message`` to the first main ``session.usage_checkpoint``
 (success) or ``session.error``. A ``system.notification`` starts a prompt-less turn of its own; a
-prompt received while such a turn is still open cannot be attributed (``AMBIGUOUS``).
+prompt received while such a turn is still open cannot be attributed (``AMBIGUOUS``), and neither can
+one that shares its turn with another prompt (copilot queues a prompt sent during a turn into it).
 """
 
 from __future__ import annotations
@@ -60,6 +61,8 @@ class CopilotLog(LogAdapter):
             t = e.get("type")
             if t in (END, ERROR):
                 break
+            if t == USER:  # an earlier prompt's turn was still open: both went into one turn (phase 5)
+                return Judgement(Outcome.AMBIGUOUS)
             if t in TURN_ACTIVITY:
                 activity = True
             if t == NOTIFICATION:
@@ -70,6 +73,8 @@ class CopilotLog(LogAdapter):
         final = None
         for _, e in main[pos + 1:]:
             t = e.get("type")
+            if t == USER:  # another prompt joined this turn: the final message may answer either
+                return Judgement(Outcome.AMBIGUOUS)
             if t == ERROR:
                 msg = _data(e).get("message")
                 return Judgement(Outcome.ERROR, msg if isinstance(msg, str) and msg else "agent error")

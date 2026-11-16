@@ -393,3 +393,65 @@ def test_a_scrolled_screen_never_points_before_the_pre_submit_position():
     assert cap.extract(scrolled, base, ["ping"], count=n) is None
     delivered = "\n".join(before[4:] + ["> ping", "PONG 6"])
     assert cap.extract(delivered, base, ["ping"], count=n) in (None, "PONG 6")
+
+
+def test_one_word_reply_that_occurs_in_the_prompt_is_kept():
+    """Review S5 (phase 4 spot check): continuation lines are matched in order, not as substrings."""
+    cap = ScreenCapture(CURSOR.footer)
+    screen = "Cursor Agent\n> Reply with exactly one word: PONG\n\nPONG\n→ Add a follow-up"
+    assert cap.extract(screen, ["Cursor Agent"], ["Reply with exactly one word: PONG"], count=1) == "PONG"
+    prompt = "Reply with exactly one word, nothing else, no punctuation at all; the word is PONG"
+    wrapped = ("Cursor Agent\n> Reply with exactly one word, nothing else, no punctuation at all;\n"
+               "the word is PONG\n\nPONG\n→ Add a follow-up")
+    assert cap.extract(wrapped, ["Cursor Agent"], [prompt], count=1) == "PONG"
+
+
+def test_cursor_first_prompt_on_a_real_screen():
+    """Phase 5: before the first prompt cursor's input line is `→ Plan, search, build anything`; it is a
+    footer marker too, otherwise the baseline is taken from lines that disappear with the first prompt."""
+    cap = ScreenCapture(CURSOR.footer)
+    before = (SCREENS / "cursor/first-prompt-before.txt").read_text()
+    after = (SCREENS / "cursor/first-prompt-pong-after.txt").read_text()
+    base = cap.baseline(before)
+    assert base and all("Plan, search" not in line for line in base)
+    assert cap.extract(after, base, ["Reply with exactly one word: PONG"], count=cap.count(before, base)) == "PONG"
+
+
+def test_copilot_two_prompts_in_one_turn_are_ambiguous(tmp_path):
+    """Phase 5: a prompt submitted while the previous turn was running joins that turn (copilot queues it);
+    the final message cannot be attributed to either prompt."""
+    p = tmp_path / "e.jsonl"
+    append_jsonl(p, {"type": "user.message", "timestamp": iso(), "data": {"content": "first"}},
+                 {"type": "assistant.message", "timestamp": iso(), "data": {"content": "", "toolRequests": [{"name": "view"}]}},
+                 {"type": "user.message", "timestamp": iso(), "data": {"content": "second"}},
+                 {"type": "assistant.message", "timestamp": iso(), "data": {"content": "SECOND", "toolRequests": []}},
+                 {"type": "session.usage_checkpoint", "timestamp": iso(), "data": {}})
+    log = CopilotLog(str(p))
+    assert log.judge(0, prompt_digest("first")).outcome is Outcome.AMBIGUOUS
+    assert log.judge(0, prompt_digest("second")).outcome is Outcome.AMBIGUOUS
+
+
+def test_claude_drops_format_characters_from_the_recorded_prompt(tmp_path):
+    """Phase 5 (real claude 2.1.322): a BOM after the guide line is not in the transcript; the prompt still
+    matches its digest."""
+    sent = f"{K.GUIDE_LINE_TEXT}\n\ufeff!touch pwned\nReply OK"
+    p = tmp_path / "c.jsonl"
+    append_jsonl(p, {"type": "user", "message": {"role": "user", "content": sent.replace("\ufeff", "")}},
+                 {"type": "assistant", "message": {"role": "assistant", "stop_reason": "end_turn",
+                                                   "content": [{"type": "text", "text": "OK"}]}},
+                 {"type": "system", "subtype": "turn_duration", "durationMs": 5})
+    assert ClaudeLog(str(p)).judge(0, prompt_digest(sent)).text == "OK"
+
+
+def test_cursor_input_line_showing_the_previous_prompt_is_a_footer():
+    """Phase 5 (real cursor run): right after a turn the input line can read `→ <previous prompt>`; the
+    baseline must not be taken from it, or the next reply is never found."""
+    cap = ScreenCapture(CURSOR.footer)
+    before = ("  Cursor Agent\n  > Reply with exactly one word: PONG\n\n  PONG\n\n"
+              "  → Reply with exactly one word: PONG\n\n  Auto Balance   Run Everything\n  /tmp/pa-work\n")
+    after = ("  Cursor Agent\n  > Reply with exactly one word: PONG\n\n  PONG\n\n  > Read both files\n\n"
+             "  - **alpha.txt**: 41\n  - **beta.txt**: 17\n\n  → Add a follow-up\n\n  Auto Balance   Run Everything\n")
+    base = cap.baseline(before)
+    assert base and all("→" not in line for line in base)
+    assert cap.extract(after, base, ["Read both files"], count=cap.count(before, base)) == \
+        "- **alpha.txt**: 41\n- **beta.txt**: 17"

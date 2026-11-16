@@ -277,6 +277,18 @@ herdr 的说明（`herdr --skill`）：发送前先校验全部按键，再写�
   `name` 字段与 `agent start` 的返回结构仍待第 8 组核对。
 - `agent explain`：没有检测到 agent 标签的目标返回错误码 `agent_explain_unavailable`（退出码 1）。库的超时错误在这种情况下
   不带诊断文本（D11），与“完成前的行为”一致。
+- `agent explain <具名 agent>`（阶段 5，copilot 启动后停在信任对话框时）：输出是**纯文本**，不是 JSON，退出码 0：
+
+  ```
+  agent: copilot
+  state: blocked
+  manifest: remote:~/.local/state/herdr/agent-detection/remote/copilot.toml 2026.08.29.1
+  rule: selection_blocker (region=whole_recent priority=300)
+  evidence: " [Current]  Sessions   Issues   Pull requests   Gists\n\n╭───…│ …"
+  ```
+
+  `evidence:` 是规则匹配到的屏幕原文（截断），可能含 prompt 的回显；`manifest:` 含用户主目录下的路径。库的超时错误
+  只保留 `agent:`、`state:`、`rule:` 三行（`agent._diagnostics`），其余由架构师决定（阶段 5 评审 A7）。
 
 ## 任务 13.17：准备脚本在 zsh、ksh 里的表现（阶段 4 第二轮返工）
 

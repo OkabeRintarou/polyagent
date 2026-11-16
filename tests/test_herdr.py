@@ -143,6 +143,14 @@ def test_text_commands_return_stdout(client, fake):
         client.agent_read("a", "bogus")
 
 
+def test_agent_explain_is_plain_text(client, fake):
+    """Task 13.13: herdr 0.9.5 prints `agent explain` as text (agent, state, manifest, rule, evidence)."""
+    text = "agent: copilot\nstate: blocked\nrule: selection_blocker (region=whole_recent priority=300)\n"
+    fake.handler = lambda argv: Resp(0, text)
+    assert client.agent_explain("a") == {"explanation": text}
+    assert fake.argvs[0][3:] == ["agent", "explain", "a"]
+
+
 def test_unresponsive_herdr_is_killed_and_reported(client, fake):
     """Scenario: herdr 无响应."""
     fake.handler = lambda argv: Resp(hang=True)

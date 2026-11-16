@@ -142,3 +142,70 @@ def temp_session(tmp_path, monkeypatch):
         assert bad == [], f"herdr calls not scoped to {name}: {bad}"
         if not ts.expect_refusals:
             assert ts.refusals() == [], f"shim refused calls: {ts.refusals()}"
+
+
+# ---- real-agent lab (task 8.1) ---------------------------------------------------------------------
+
+
+@pytest.fixture
+def lab_factory(request):
+    """``lab_factory(**kw)`` opens an ``AgentLab`` (one temp session, isolated agent homes); every lab
+    is torn down after the test, also when it failed, and the teardown checks are asserted."""
+    from .agentlab import AgentLab
+
+    real = _checked_herdr()
+    labs: list[AgentLab] = []
+
+    def make(**kw):
+        tag = "".join(ch for ch in request.node.name if ch.isalnum())[:16] or "lab"
+        lab = AgentLab(real, tag=tag, **kw)
+        lab.__enter__()
+        labs.append(lab)
+        return lab
+
+    yield make
+    failures = []
+    for lab in reversed(labs):  # every lab is torn down whatever happened to the others
+        try:
+            try:
+                failures += [f"[{lab.name}] herdr call not scoped or refused: {c}" for c in lab.audit()]
+            finally:
+                lab.__exit__(None, None, None)
+        except BaseException as e:  # noqa: BLE001 - reported below, after all labs (also a Ctrl-C)
+            failures.append(f"[{lab.name}] teardown raised {e!r}")
+        for note in lab.notes:
+            print(f"[{lab.name}] {note}")
+        failures += [f"[{lab.name}] {p}" for p in getattr(lab, "problems", ["teardown did not finish"])]
+    assert failures == [], "\n".join(failures)
+
+
+@pytest.fixture
+def agent_lab(lab_factory):
+    return lab_factory()
+
+
+@pytest.fixture
+def real_herdr():
+    return _checked_herdr()
+
+
+_PREFLIGHT: list[str] | None = None
+
+
+def _checked_herdr() -> str:
+    """The real herdr, after the once-per-session pre-flight check for leftovers of a killed run
+    (review C3): any leftover stops every lab test with instructions; nothing is removed automatically."""
+    global _PREFLIGHT
+    from .agentlab import preflight
+
+    if not _enabled():
+        pytest.skip("set POLYAGENT_INTEGRATION=1 to run integration tests")
+    real = _real_herdr()
+    if not real:
+        pytest.skip("herdr is not installed")
+    if _PREFLIGHT is None:
+        _PREFLIGHT = preflight(real)
+    if _PREFLIGHT:
+        pytest.fail("leftovers of an earlier integration run must be handled first:\n- " + "\n- ".join(_PREFLIGHT),
+                    pytrace=False)
+    return real

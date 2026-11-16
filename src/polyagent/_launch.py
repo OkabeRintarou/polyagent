@@ -49,6 +49,7 @@ POLICY_REASONS = frozenset({"user_rules", "sandbox_unavailable", "executable_sha
 REASONS = {
     "provider_env": "inherited provider variables could not be cleared (read-only variables?)",
     "export_failed": "an exported variable does not have the given value (read-only variable?)",
+    "shell_hooks": "the pane shell keeps a PROMPT_COMMAND that could undo the preparation (read-only variable?)",
     "executable_shadowed": "the agent's executable still resolves to an alias, a shell function or nothing "
                            "after they were removed",
     "permission_env": "a permission switch variable of the agent is still set after it was unset (read-only variable?)",
@@ -92,7 +93,14 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
     skips functions). Tracing is switched off first so that ``set -x``/``set -v`` cannot echo the
     exported values to the screen; after the exports the provider families are checked again (C4)."""
     c = "\\command"
-    lines = ["# polyagent pane preparation", f"{{ {c} set +xv; }} 2>/dev/null"]
+    # `set +a`: with allexport on, an assignment in the prompt (PS1 `${X:=…}`) would export it (review C2).
+    lines = ["# polyagent pane preparation", f"{{ {c} set +xva; }} 2>/dev/null",
+             # Hooks the shell runs between this script and the `agent start` command line (before the next
+             # prompt, before each command) would undo everything below: a PROMPT_COMMAND that re-adds an
+             # alias or re-exports a variable did exactly that in a real pane (phase-5 finding P5-3).
+             # (The DEBUG trap is cleared on the command line that sources this file: bash restores it
+             # after `.` when the sourced file changes it.)
+             f"{c} unset PROMPT_COMMAND 2>/dev/null; PS0="]
     ro = spec.policy == "read_only"
     if ro:
         exe = shlex.quote(adapter.executable)
@@ -117,6 +125,8 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
         lines.append(f'for __pa_v in $({listing}); do case " {allowed} " in *" $__pa_v "*) ;; '
                      f'*) {c} echo __pa_reason_provider_env_$((1+1)); return 1 ;; esac; done')
         lines.append(f"{c} unset __pa_v")
+    lines.append(f'if {c} test -n "${{PROMPT_COMMAND+x}}"; then {c} echo __pa_reason_shell_hooks_$((1+1)); return 1; fi')
+    lines.append(f"case $- in *a*) {c} echo __pa_reason_shell_hooks_$((1+1)); return 1 ;; esac")
     # Every export took effect with its value: a read-only variable keeps its old value although its
     # name is allowed (D6 re-check `export_failed`).
     for name, value in exports.items():
@@ -137,6 +147,32 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
     return "\n".join(lines) + "\n"
 
 
+TRAPS = "DEBUG RETURN ERR"
+
+
+def prep_command(path: str) -> str:
+    """The pane command line for the script (D6 step 3).
+
+    The shell's DEBUG, RETURN and ERR traps are removed first, in the shell itself and with `\\command`
+    (a function named `trap` must not stand in): a DEBUG trap runs before every command, also before the
+    `agent start` command line, a RETURN trap when the sourced script ends, after all its re-checks; either
+    could re-export what the script cleared (phase-5 findings P5-3, review C2). bash restores a DEBUG or
+    RETURN trap that a sourced file changes, so this cannot happen inside the script. After the script,
+    the same command line checks that no such trap is set (`trap -p` into a file: a command substitution
+    would run in a subshell, which does not inherit them) and fails with the reason `shell_hooks`."""
+    q, t = shlex.quote(path), shlex.quote(path + ".traps")
+    c = "\\command"
+    # The outcome is decided with `case` on a saved status and on the file content, not with `&&` on
+    # command statuses: in bash 5.2 a trap left by the sourced file can make a failing `command test`
+    # inside a group look successful. A trap counts when it has an action (`trap -- '<action>' SIG`):
+    # POSIX-mode bash also prints `trap -- - SIG` for traps without one. dash has neither these traps
+    # nor `trap -p`; both fail there, harmlessly, and leave the file empty.
+    return (f"{{ {c} trap - {TRAPS}; }} 2>/dev/null; . {q}; __pa_s=$?; {{ {c} trap -p {TRAPS}; }} >{t} 2>/dev/null; "
+            f'case "$({c} grep "^trap -- \'" {t} 2>/dev/null)" in ?*) {c} echo __pa_reason_shell_hooks_$((1+1)); __pa_s=1 ;; esac; '
+            f"{c} rm -f {t}; case $__pa_s in 0) {c} rm -f {q}; {c} echo __pa_env_ok_$((1+1)) ;; "
+            f"*) {c} echo __pa_env_fail_$((1+1)) ;; esac; {c} unset __pa_s")
+
+
 def run_prep(client: H.HerdrClient, pane_id: str, spec: AgentSpec, adapter: K.KindAdapter) -> None:
     """D6 steps 1–4. Raises PolicyNotSupportedError for a failed self-check, AgentTimeoutError when the
     script does not finish in time, HerdrError otherwise (including variables that could not be cleared).
@@ -147,8 +183,7 @@ def run_prep(client: H.HerdrClient, pane_id: str, spec: AgentSpec, adapter: K.Ki
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(prep_script(spec, adapter))
-        q = shlex.quote(path)
-        client.pane_run(pane_id, f". {q} && rm -f {q} && echo __pa_env_ok_$((1+1)) || echo __pa_env_fail_$((1+1))")
+        client.pane_run(pane_id, prep_command(path))
         try:
             client.pane_wait_output(pane_id, PREP_TIMEOUT_MS, regex=SENTINEL_RE, source="recent")
         except HerdrError as e:
@@ -159,16 +194,17 @@ def run_prep(client: H.HerdrClient, pane_id: str, spec: AgentSpec, adapter: K.Ki
         if "__pa_env_ok_2" in screen and "__pa_env_fail_2" not in screen:
             return
         m = REASON_RE.search(screen)
-        if m and m.group(1) in POLICY_REASONS:
+        if m and (m.group(1) in POLICY_REASONS or (m.group(1) == "shell_hooks" and spec.policy == "read_only")):
             raise PolicyNotSupportedError(f"{adapter.kind} read_only cannot be enforced in this pane: "
                                           f"{REASONS[m.group(1)]}")
         why = REASONS.get(m.group(1), m.group(1)) if m else "the script failed"
         raise HerdrError("prep_failed", f"preparing the pane environment failed: {why}")
     finally:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+        for leftover in (path, path + ".traps"):
+            try:
+                os.unlink(leftover)
+            except FileNotFoundError:
+                pass
 
 
 def _precondition(dialog: K.Dialog, spec: AgentSpec) -> bool:
@@ -197,6 +233,21 @@ def _wait_gone(client: H.HerdrClient, pane_id: str, dialog: K.Dialog) -> str | N
         if time.monotonic() >= deadline:
             return screen
         time.sleep(DIALOG_POLL)
+
+
+def _after_answer(client: H.HerdrClient, name: str, pane_id: str, adapter: K.KindAdapter) -> None:
+    """After an answered dialog left the screen: herdr's state lags behind the screen (copilot stays
+    `blocked` for about a second), and `agent wait` without `--until` returns at once on that stale
+    state. Poll until the state is no longer `blocked` or a next known dialog is shown (bounded), then
+    let the agent settle."""
+    deadline = time.monotonic() + DIALOG_WAIT_MS / 1000
+    while time.monotonic() < deadline:
+        if match_dialog(adapter, client.pane_read(pane_id, "visible")) is not None:
+            return
+        if client.agent_get(name).get("agent_status") != "blocked":
+            break
+        time.sleep(DIALOG_POLL)
+    _wait_settled(client, name)
 
 
 def _wait_settled(client: H.HerdrClient, name: str) -> None:
@@ -242,7 +293,7 @@ def handle_dialogs(client: H.HerdrClient, name: str, pane_id: str, spec: AgentSp
         if still is not None:
             raise AgentBlockedError(f"the {adapter.kind} {dialog.name} dialog of agent {name} did not go away "
                                     "after it was answered", still, name)
-        _wait_settled(client, name)
+        _after_answer(client, name, pane_id, adapter)
         waited = True
 
 

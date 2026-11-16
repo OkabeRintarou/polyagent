@@ -49,6 +49,9 @@ for a in "${args[@]}"; do
   [ "$a" = "--" ] && break
   case "$a" in --session|--session=*) refuse "repeated --session" ;; esac
 done
+if [ "${args[0]}" = "server" ]; then
+  :__REQUIRE__
+fi
 if [ "${args[0]}" = "session" ]; then
   case "${args[1]}" in
     list) ;;
@@ -64,11 +67,19 @@ exec "$REAL" "$@"
 """
 
 
-def build_shim(directory: Path, real: str, name: str, log: Path, refused: Path) -> Path:
+def build_shim(directory: Path, real: str, name: str, log: Path, refused: Path,
+               server_env: dict[str, str] | None = None) -> Path:
+    """``server_env``: variables a ``server`` launch must carry with exactly these values (the agent lab's
+    isolated homes); a server started from any other environment is refused (it could reach the user's
+    real agent configuration)."""
     directory.mkdir(parents=True, exist_ok=True)
     shim = directory / "herdr"
+    require = "".join(
+        f'\n  [ "${{{k}-}}" = {shlex.quote(v)} ] || refuse "server started without the isolated {k}"'
+        for k, v in sorted((server_env or {}).items()))
     body = (
-        _TEMPLATE.replace("__LOG__", shlex.quote(str(log)))
+        _TEMPLATE.replace(":__REQUIRE__", ":" + require)
+        .replace("__LOG__", shlex.quote(str(log)))
         .replace("__REFUSED__", shlex.quote(str(refused)))
         .replace("__NAME__", shlex.quote(name))
         .replace("__REAL__", shlex.quote(real))

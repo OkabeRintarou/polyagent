@@ -1,10 +1,11 @@
 """Review T2: the D6 preparation script executed by real POSIX shells (no herdr, no agent).
 
-Each test sources the generated script the way the pane does (`. file`), with inherited variables
-in the environment, then reads the resulting environment with `env -0`.
+Each test runs the library's own pane command line (`_launch.prep_command`) on the generated script,
+with inherited variables in the environment, then reads the resulting environment with `env -0`.
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 
@@ -20,6 +21,12 @@ INHERITED = {"ANTHROPIC_CUSTOM_HEADERS": "X-Old: old", "AWS_PROFILE": "old", "CL
              "GOOGLE_APPLICATION_CREDENTIALS": "/old", "CLOUD_ML_REGION": "old", "ANTHROPIC_MODEL": "old-model",
              "KEEP_ME": "kept", "COPILOT_ALLOW_ALL": "true"}
 SHELLS = [s for s in sorted(L.POSIX_SHELLS) if shutil.which(s)]  # the accepted shells present on this host
+if shutil.which("bash"):
+    SHELLS.append("bash-posix")  # bash in POSIX mode prints traps differently (D6, phase-5 design notes)
+
+
+def argv(shell):
+    return ["bash", "--posix"] if shell == "bash-posix" else [shell]
 
 
 def fake_bin(tmp_path):
@@ -36,15 +43,24 @@ def fake_bin(tmp_path):
 def run(shell, script, tmp_path, preamble="", with_agents=True):
     f = tmp_path / "prep.sh"
     f.write_text(script)
-    path = os.pathsep.join(([str(fake_bin(tmp_path))] if with_agents else []) + [os.path.dirname(shutil.which(shell)),
-                                                                               "/usr/bin", "/bin"])
+    exe = shutil.which(argv(shell)[0])
+    path = os.pathsep.join(([str(fake_bin(tmp_path))] if with_agents else []) + [os.path.dirname(exe), "/usr/bin", "/bin"])
     env = {"PATH": path, "HOME": str(tmp_path), **INHERITED}
-    code = f"{preamble}\n. {f} && echo __OK__ || echo __FAIL__\ncommand env -0\n"
-    out = subprocess.run([shutil.which(shell), "-c", code], env=env, capture_output=True, timeout=30)
-    head, _, rest = out.stdout.partition(b"\n")
+    code = f"{preamble}\n{L.prep_command(str(f))}\ncommand env -0\n"
+    out = subprocess.run([exe, *argv(shell)[1:], "-c", code], env=env, capture_output=True, timeout=30)
+    rest, marks = out.stdout, []
+    while True:  # the sentinel and reason lines come first, then the environment
+        line, sep, tail = rest.partition(b"\n")
+        if not (sep and line.startswith(b"__pa_")):
+            break
+        marks.append(line.decode())
+        rest = tail
+    ok = "__pa_env_ok_2" in marks
+    reason = next((m for m in marks if m.startswith("__pa_reason_")), None)
+    head = reason or ("__OK__" if ok else "__FAIL__")
     got = dict(item.split(b"=", 1) for item in rest.split(b"\0") if b"=" in item)
-    return head.decode(), {k.decode(): v.decode() for k, v in got.items()}, out.stdout.decode(errors="replace"), \
-        out.stderr.decode(errors="replace")
+    text = "\n".join(marks + ["__OK__" if ok else "__FAIL__"])
+    return head, {k.decode(): v.decode() for k, v in got.items()}, text, out.stderr.decode(errors="replace")
 
 
 def claude_spec(policy="read_only", **kw):
@@ -167,3 +183,85 @@ def test_caller_variable_that_cannot_be_exported_fails_the_script(shell, tmp_pat
     head, _, out, err = run(shell, L.prep_script(claude_spec("full_auto"), K.adapter("claude")), tmp_path,
                             "MY_VAR=old; readonly MY_VAR")
     assert head == "__pa_reason_export_failed_2" and "__FAIL__" in out, (out, err)
+
+
+HOOK = "alias copilot='copilot --yolo'; export COPILOT_ALLOW_ALL=true"
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+@pytest.mark.parametrize("posix", [False, True])
+@pytest.mark.parametrize("hooks", [
+    f"PROMPT_COMMAND={shlex.quote(HOOK)}",
+    f"PROMPT_COMMAND=(true {shlex.quote(HOOK)})",  # bash 5.1+ array form
+    "set -a; PS1='${COPILOT_ALLOW_ALL:=true}'",  # allexport plus an assigning prompt
+    f"trap {shlex.quote(HOOK)} DEBUG",
+    f"trap {shlex.quote(HOOK)} DEBUG; trap() {{ :; }}",  # a function named `trap` cannot keep it (review C2)
+    f"trap {shlex.quote(HOOK)} RETURN",  # runs when the sourced script ends, after its re-checks
+    "PS0='$(touch ps0-ran)'",
+])
+def test_shell_hooks_are_removed(tmp_path, hooks, posix):
+    """Phase-5 findings P5-3 / review C2: hooks bash runs between the script and the `agent start` command
+    line (PROMPT_COMMAND before the next prompt, DEBUG before each command, RETURN when the sourced file
+    ends) are removed; the library's own command line is used, and the next command line is plain."""
+    if posix and "trap()" in hooks:
+        pytest.skip("POSIX-mode bash refuses a function named `trap` (special builtin)")
+    f = tmp_path / "check.sh"
+    f.write_text(L.prep_script(RO_COPILOT, K.adapter("copilot")))
+    probe = subprocess.run(
+        ["bash", *(["--posix"] if posix else []), "-c", f"shopt -s expand_aliases; {hooks}\n{L.prep_command(str(f))}\n"
+                       'echo "PC=[${PROMPT_COMMAND-unset}] PS0=[$PS0] ALLOW=[${COPILOT_ALLOW_ALL-unset}] FLAGS=[$-]"; '
+                       "builtin trap -p DEBUG RETURN; alias copilot 2>/dev/null || echo NOALIAS"],
+        env={"PATH": f"{fake_bin(tmp_path)}:/usr/bin:/bin"}, capture_output=True, text=True, timeout=30)
+    assert "__pa_env_ok_2" in probe.stdout, probe.stdout + probe.stderr
+    assert "PC=[unset] PS0=[] ALLOW=[unset]" in probe.stdout, probe.stdout
+    assert "NOALIAS" in probe.stdout
+    flags = probe.stdout.split("FLAGS=[", 1)[1].split("]", 1)[0]
+    assert "a" not in flags, "allexport still on"
+    assert not any(line.startswith("trap -- '") for line in probe.stdout.splitlines()), probe.stdout
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_a_trap_still_set_after_the_script_fails_it(tmp_path):
+    """The check on the command line itself: a trap left in place after the script (here one the sourced
+    file sets; bash keeps an ERR trap set by a sourced file) fails the preparation with `shell_hooks`."""
+    f = tmp_path / "check.sh"
+    f.write_text(L.prep_script(RO_COPILOT, K.adapter("copilot")).replace("return 0", "trap 'true' ERR\nreturn 0"))
+    probe = subprocess.run(["bash", "-c", L.prep_command(str(f))], env={"PATH": f"{fake_bin(tmp_path)}:/usr/bin:/bin"},
+                           capture_output=True, text=True, timeout=30)
+    assert "__pa_reason_shell_hooks_2" in probe.stdout and "__pa_env_fail_2" in probe.stdout, probe.stdout
+    assert not os.path.exists(str(f) + ".traps")
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_prompt_command_that_cannot_be_removed_fails_the_script(shell, tmp_path):
+    head, _, out, err = run(shell, L.prep_script(RO_COPILOT, K.adapter("copilot")), tmp_path,
+                            f"PROMPT_COMMAND={shlex.quote(HOOK)}; readonly PROMPT_COMMAND")
+    assert head == "__pa_reason_shell_hooks_2", (out, err)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_allexport_is_switched_off(shell, tmp_path):
+    """Phase-5 design notes (A2): with `set -a` an assignment in the prompt would be exported."""
+    head, env, out, err = run(shell, L.prep_script(RO_COPILOT, K.adapter("copilot")), tmp_path, "set -a")
+    assert head == "__OK__", (out, err)
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_plain_shell_passes_the_trap_check(shell, tmp_path):
+    """No hooks at all: the trap check (with POSIX-mode bash printing `trap -- - SIG` lines) passes."""
+    head, _, out, err = run(shell, L.prep_script(RO_COPILOT, K.adapter("copilot")), tmp_path)
+    assert head == "__OK__", (out, err)
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_hook_that_re_exports_backend_variables_is_removed(tmp_path):
+    """agent-session scenario: a PROMPT_COMMAND that re-exports another backend after the script ran."""
+    f = tmp_path / "check.sh"
+    f.write_text(L.prep_script(claude_spec("full_auto"), K.adapter("claude")))
+    hook = "export ANTHROPIC_BASE_URL=https://other.example.com CLAUDE_CODE_USE_BEDROCK=1"
+    probe = subprocess.run(
+        ["bash", "-c", f"PROMPT_COMMAND={shlex.quote(hook)}\n{L.prep_command(str(f))}\n"
+                       'eval "$PROMPT_COMMAND"; echo "URL=[$ANTHROPIC_BASE_URL] BEDROCK=[${CLAUDE_CODE_USE_BEDROCK-unset}]"'],
+        env={"PATH": f"{fake_bin(tmp_path)}:/usr/bin:/bin", **INHERITED}, capture_output=True, text=True, timeout=30)
+    assert "__pa_env_ok_2" in probe.stdout, probe.stdout + probe.stderr
+    assert "URL=[https://llm.example.com] BEDROCK=[unset]" in probe.stdout, probe.stdout

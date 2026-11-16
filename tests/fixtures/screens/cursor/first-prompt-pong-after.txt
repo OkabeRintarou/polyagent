@@ -1,0 +1,24 @@
+. /run/user/1000/polyagent-XXXXXXXX.sh && rm -f /run/user/1000/polyagent-XXXXXXXX.sh && echo __pa_env_ok_$((1+1)) || echo __pa_env_fail_$((1+1))
+user@host:/tmp/pa-work$ . /run/user/1000/polyagent-XXXXXXXX.sh && rm -f /run/user/1000/polyagent-XXXXXXXX.sh && echo __pa_env_ok_$((1+1)) || echo __pa_env_fail_$((1+1))
+__pa_env_ok_2
+user@host:/tmp/pa-work$ cursor-agent --trust --yolo
+
+
+  Cursor Agent
+  v2026.11.10-731fb78
+  Tip: Try Cursor Grok 4.7 via /model, frontier intelligence at a fraction of the cost.
+
+
+  Reply with exactly one word: PONG
+
+
+  PONG
+
+
+
+
+  → Add a follow-up
+
+
+  Auto Balance · 3.6%                                                                                  Run Everything
+  /tmp/pa-work
