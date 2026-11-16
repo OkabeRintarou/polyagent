@@ -38,6 +38,7 @@ from .kinds import KINDS, is_config_env
 from .spec import AgentSpec
 
 log = logging.getLogger("polyagent")
+PANE_ENV = {"HISTFILE": "/dev/null"}  # set for the shell of every pane the library creates
 T = TypeVar("T")
 
 # ---- server environment (D3) -------------------------------------------------
@@ -52,7 +53,10 @@ SERVER_ENV_NAMES = frozenset(
     }
 )
 SERVER_ENV_PREFIXES = ("LC_", "XDG_")
-PASSTHROUGH_FORBIDDEN_NAMES = frozenset({"BASH_ENV", "ENV", "NODE_OPTIONS"}) | H.SESSION_DIR_VARS
+# Task 13.11: besides start-up files and node options, what every pane's interactive shell would run or
+# expand (prompt hooks and prompts, shell options) and node module resolution (the CLIs' own code).
+PASSTHROUGH_FORBIDDEN_NAMES = frozenset({"BASH_ENV", "ENV", "NODE_OPTIONS", "NODE_PATH", "PROMPT_COMMAND", "PS0",
+                                         "PS1", "PS4", "SHELLOPTS", "BASHOPTS"}) | H.SESSION_DIR_VARS
 PASSTHROUGH_FORBIDDEN_PREFIXES = ("LD_", "HERDR_")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SERVER_PROBE_INTERVAL = 0.2
@@ -195,6 +199,25 @@ class PolyAgent:
 
     Construction validates the session name and ``server_env_passthrough`` before any herdr
     call, checks the herdr version, then starts a headless server for the session if none runs.
+    herdr's ``default`` session is refused. The server is started with a minimal environment
+    (``PATH``, ``HOME``, locale, terminal, proxies, ``XDG_*`` and ``HERDR_CONFIG_PATH``) plus the
+    names in ``server_env_passthrough``; names that would change an agent's permissions or every pane
+    shell (``BASH_ENV``, ``PROMPT_COMMAND``, the CLIs' configuration families, ...) are refused.
+
+    Example::
+
+        from polyagent import PolyAgent, AgentSpec
+
+        pa = PolyAgent(session="my-service")
+        agent = pa.start(AgentSpec(kind="claude", policy="read_only", provider=provider), "/srv/repo")
+        try:
+            print(agent.ask("Summarise README.md in three bullets.", timeout=300))
+        finally:
+            agent.close()
+
+    ``start`` is safe to call from several threads at once. ``stop_server()`` kills every agent of
+    the session, also those of other processes; after a restart the old workspaces come back as
+    orphans and ``cleanup()`` closes them.
     """
 
     def __init__(
@@ -431,7 +454,10 @@ class PolyAgent:
         marker = Marker(name=name, kind=spec.kind, policy=spec.policy, created=int(time.time()),  # type: ignore[arg-type]
                         session_id=sid, discussion_id=discussion_id)
         label = marker.encode()
-        created = self._herdr.workspace_create(cwd, label)
+        # The pane's shell writes no history: without this the command lines herdr types (the start
+        # command, and the preparation line where there is one) go to the history file of the user who
+        # runs the server (D6 "shell 历史", task 13.19). Not a credential, so argv is fine.
+        created = self._herdr.workspace_create(cwd, label, PANE_ENV)
         wid = (created.get("workspace") or {}).get("workspace_id")
         pane = (created.get("root_pane") or {}).get("pane_id")
         if not isinstance(wid, str) or not isinstance(pane, str):

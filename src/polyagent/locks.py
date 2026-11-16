@@ -1,7 +1,7 @@
 """Per-agent ``flock`` file locks under ``~/.local/state/polyagent/<session>/`` (design D5).
 
 Layout: ``<dir>/server.lock`` guards server start (D3); ``<dir>/agents/<name>.lock`` guards one
-agent. Agent locks live in their own subdirectory so no agent name can collide with the
+agent; ``<dir>/agents/<name>.submitted`` is the submission record of D11 (a small file, not a lock). Agent locks live in their own subdirectory so no agent name can collide with the
 server lock (review A1). Every acquisition opens the lock file anew, so threads of one process,
 several handles of the same agent and different processes all exclude each other. Lock files
 are never deleted.
@@ -133,6 +133,16 @@ def agent_lock(session: str, name: str) -> FileLock:
     except OSError as e:
         raise InvalidConfigError(f"cannot create the agent lock directory {sub} ({e.strerror or e})") from None
     return FileLock(sub / f"{validate_agent_name(name)}.lock")
+
+
+def submission_path(session: str, name: str) -> Path:
+    """``agents/<name>.submitted``: the D11 submission record of agent ``name`` (not a lock)."""
+    sub = lock_dir(session) / AGENT_LOCK_DIR
+    try:
+        _private_dir(sub)
+    except OSError as e:
+        raise InvalidConfigError(f"cannot create the agent lock directory {sub} ({e.strerror or e})") from None
+    return sub / f"{validate_agent_name(name)}.submitted"
 
 
 def server_lock(session: str) -> FileLock:

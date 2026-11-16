@@ -108,8 +108,7 @@ def test_copilot_trust_is_not_persisted(agent_lab):
     """Scenario: 信任不持久化 — the trust dialog is answered "this session only"."""
     require_kind("copilot")
     cwd = agent_lab.work("copilot-trust")
-    agent = agent_lab.start("copilot", cwd)
-    assert agent.status() in ("idle", "done")
+    agent_lab.start("copilot", cwd)  # started means the trust dialog was answered (D9)
     config = agent_lab.homes["COPILOT_HOME"] / "config.json"
     text = config.read_text() if config.exists() else ""
     assert str(cwd) not in text and os.path.realpath(cwd) not in text

@@ -418,10 +418,10 @@ def test_blocked_before_submitting_is_handled_first(tmp_path):
 def test_screen_capture_when_no_log(tmp_path):
     """Scenario: 退回屏幕截取 (cursor)."""
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n"
+    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
 
     def on_prompt(fake, name, text, wait):
-        fake.recent = f"older output\n  {text}\n  The answer is 42.\n→ Add a follow-up\n"
+        fake.recent = f"older output\n  {text}\n  The answer is 42.\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
 
     c.on_prompt = on_prompt
     r = agent.ask_reply("What is the answer?", 5)
@@ -431,7 +431,7 @@ def test_screen_capture_when_no_log(tmp_path):
 def test_reply_that_cannot_be_separated(tmp_path):
     """Scenario: 无法分离回复 — ReplyNotFoundError with the screen, never the raw screen as a reply."""
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n"
+    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
     c.screens = ["visible screen text"]
     c.on_prompt = lambda fake, name, text, wait: setattr(fake, "recent", "something else entirely\n")
     with pytest.raises(ReplyNotFoundError) as ei:
@@ -476,12 +476,12 @@ def test_wait_reply_rejects_foreign_pending(tmp_path):
 
 def test_screen_pending_round_trip(tmp_path):
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n"
+    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
     c.on_prompt = lambda fake, name, text, wait: fake.set_status(name, "working")
     with pytest.raises(AgentTimeoutError) as ei:
         agent.ask("What is the answer?", 0.2)
     assert ei.value.pending["source"] == "screen"
-    c.recent = "older output\n  What is the answer?\n  42\n→ Add a follow-up\n"
+    c.recent = "older output\n  What is the answer?\n  42\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
     c.set_status("a", "idle")
     assert agent.wait_reply(ei.value.pending, 5).text == "42"
 
@@ -818,11 +818,11 @@ def test_bound_adapter_is_reused(tmp_path):
 def test_screen_delivery_evidence_is_the_echo(tmp_path):
     """Review C11 (second point): the echo alone confirms delivery; the reply may come later."""
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n"
+    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
 
     def on_prompt(fake, name, text, wait):
         fake.recent = f"older output\n  {text}\n"
-        later(0.05, lambda: setattr(fake, "recent", f"older output\n  {text}\n  42\n→ Add a follow-up\n"))
+        later(0.05, lambda: setattr(fake, "recent", f"older output\n  {text}\n  42\n→ Add a follow-up\n  Auto Balance   Run Everything\n"))
         later(0.1, fake.set_status, name, "idle")
         return herr(H.AGENT_PROMPT_STALLED, "stalled")
 
@@ -861,7 +861,7 @@ def test_screen_echo_is_no_delivery_evidence_without_screen_samples(tmp_path):
 
 def cursor_three_pings(tmp_path):
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "\n".join(["Cursor Agent"] + ["> ping", "PONG"] * 3 + ["→ Add a follow-up"]) + "\n"
+    c.recent = "\n".join(["Cursor Agent"] + ["> ping", "PONG"] * 3 + ["→ Add a follow-up", "  Auto Balance   Run Everything"]) + "\n"
     return c, agent
 
 
@@ -910,7 +910,7 @@ def test_state_change_evidence_starts_after_the_pre_check_wait(tmp_path, before)
     """Review N2: the state compared for delivery is the one after waiting for the earlier turn; a
     stalled, undelivered prompt is PromptNotDelivered, not a 'state changed' delivery."""
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n"
+    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
     c.set_status("a", before)
     c.wait_result = lambda fake, name, ms, until: fake.set_status(name, "idle") if fake.agents[name][
         "agent_status"] != "idle" else None
@@ -924,7 +924,7 @@ def test_state_change_evidence_starts_after_the_pre_check_wait(tmp_path, before)
 
 def cursor_one_ping(tmp_path):
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "Cursor Agent\n> ping\nPONG\n→ Add a follow-up\n"
+    c.recent = "Cursor Agent\n> ping\nPONG\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
     return c, agent
 
 
@@ -1006,7 +1006,7 @@ def test_empty_baseline_with_count_zero_is_accepted(tmp_path):
     c, agent, _ = make(tmp_path, kind="cursor", log=False)
     pending = {"v": A.PENDING_VERSION, "agent": "a", "kind": "cursor", "sid": None, "digest": prompt_digest("q"),
                "source": "screen", "baseline": [], "count": 0, "echo": ["q"]}
-    c.recent = "> q\nanswer\n→ Add a follow-up\n"
+    c.recent = "> q\nanswer\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
     assert agent.wait_reply(pending, 2).text == "answer"
 
 
@@ -1043,3 +1043,194 @@ def test_no_diagnostics_when_explain_has_none_of_the_kept_lines(tmp_path):
     with pytest.raises(AgentTimeoutError) as ei:
         agent.ask("q", 0.3)
     assert ei.value.diagnostics is None
+
+
+# ---- 7.10 submission record (D11, kinds whose herdr status is not trusted) -------------------------
+
+
+from polyagent import locks  # noqa: E402
+from polyagent.capture.copilot import CopilotLog  # noqa: E402
+
+
+def record_file(name="a"):
+    return locks.submission_path("polyagent", name)
+
+
+def prompts_by_call(*handlers):
+    """``on_prompt`` that runs the n-th handler on the n-th submission."""
+    calls = []
+
+    def on_prompt(fake, name, text, wait):
+        calls.append(time.monotonic())
+        handlers[len(calls) - 1](fake, name, text, wait)
+    return on_prompt, calls
+
+
+def nothing(fake, name, text, wait):
+    pass
+
+
+def test_previous_prompt_not_yet_in_the_log_is_waited_for(tmp_path, monkeypatch):
+    """Scenario: 上一次提交还没有出现在会话日志里."""
+    monkeypatch.setattr(A, "CONFIRM_LIMIT", 3.0)
+    c, agent, path = make(tmp_path, kind="copilot")
+    on_prompt, calls = prompts_by_call(nothing, answer_copilot(path, "second reply"))
+    c.on_prompt = on_prompt
+    with pytest.raises(AgentTimeoutError) as first:
+        agent.ask("first question", 0.2)
+    assert record_file().exists()
+    ended = []
+    later(0.2, copilot_user, path, "first question")
+    later(0.4, lambda: (ended.append(time.monotonic()), copilot_end(path, "first reply")))
+    assert agent.ask("second question", 5) == "second reply"
+    assert len(calls) == 2 and calls[1] >= ended[0]
+    assert agent.wait_reply(first.value.pending, 5).text == "first reply"
+    assert not record_file().exists()  # removed once the first prompt showed up; the second was confirmed
+
+
+def test_previous_prompt_that_never_arrives_stops_counting_after_the_limit(tmp_path, monkeypatch):
+    """Scenario: 上一次提交始终没有出现."""
+    monkeypatch.setattr(A, "CONFIRM_LIMIT", 0.5)
+    c, agent, path = make(tmp_path, kind="copilot")
+    on_prompt, calls = prompts_by_call(nothing, answer_copilot(path, "new reply"))
+    c.on_prompt = on_prompt
+    with pytest.raises(AgentTimeoutError):
+        agent.ask("lost", 0.2)
+    written_at = json.loads(record_file().read_text())["at"]
+    assert agent.ask("new", 5) == "new reply"
+    assert time.time() - written_at >= 0.5 and len(calls) == 2
+
+
+def test_record_holds_no_prompt_text_and_is_private(tmp_path):
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = nothing
+    with pytest.raises(AgentTimeoutError):
+        agent.ask("very secret question text", 0.2)
+    f = record_file()
+    data = f.read_text()
+    assert "secret" not in data and set(json.loads(data)) == {"v", "digest", "mark", "at"}
+    assert json.loads(data)["digest"] == prompt_digest("very secret question text")
+    assert f.stat().st_mode & 0o777 == 0o600
+
+
+def write_record(at, digest="d" * 64, mark=0):
+    record_file().write_text(json.dumps({"v": 1, "digest": digest, "mark": mark, "at": at}))
+
+
+def test_waiting_for_a_record_is_busy_and_submits_nothing(tmp_path):
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = answer_copilot(path, "x")
+    write_record(time.time())
+    with pytest.raises(AgentBusyError, match="not reached its session log"):
+        agent.ask("q", 0.2)
+    assert not c.args_of("agent_prompt")
+
+
+def test_record_from_another_handle_counts(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "CONFIRM_LIMIT", 3.0)
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = nothing
+    with pytest.raises(AgentTimeoutError):
+        agent.ask("first", 0.2)
+    other = A.Agent(c, name="a", kind="copilot", policy="full_auto", workspace_id="w1", pane_id="w1:p1",
+                    label="LABEL", session_id="sid")
+    other._log_path = str(path)
+    with pytest.raises(AgentBusyError):
+        other.ask("second", 0.3)
+    assert len(c.args_of("agent_prompt")) == 1
+
+
+def test_record_written_by_another_process_counts(tmp_path):
+    import subprocess
+    import sys
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = answer_copilot(path, "x")
+    target = record_file()
+    code = ("import json, sys, time; open(sys.argv[1], 'w').write(json.dumps("
+            "{'v': 1, 'digest': 'e' * 64, 'mark': 0, 'at': time.time()}))")
+    subprocess.run([sys.executable, "-c", code, str(target)], check=True)
+    with pytest.raises(AgentBusyError):
+        agent.ask("q", 0.2)
+    assert not c.args_of("agent_prompt")
+
+
+def test_expired_record_is_ignored_and_removed(tmp_path):
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = answer_copilot(path, "fresh")
+    write_record(time.time() - 3600)
+    assert agent.ask("q", 2) == "fresh" and not record_file().exists()
+
+
+def test_record_from_the_future_counts_as_just_submitted(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "CONFIRM_LIMIT", 0.4)
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = answer_copilot(path, "later")
+    write_record(time.time() + 3600)
+    with pytest.raises(AgentBusyError):
+        agent.ask("q", 0.2)
+    started = time.monotonic()
+    assert agent.ask("q", 5) == "later"
+    assert time.monotonic() - started >= 0.4  # waited the limit from first sight, not until the future time
+
+
+@pytest.mark.parametrize("content", ["not json", json.dumps({"digest": 1}), json.dumps({"v": 1, "digest": "d",
+                                                                                      "mark": -1, "at": 1.0})])
+def test_malformed_record_is_ignored(tmp_path, content):
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = answer_copilot(path, "ok")
+    record_file().write_text(content)
+    assert agent.ask("q", 2) == "ok" and not record_file().exists()
+
+
+def test_close_removes_the_record(tmp_path):
+    c, agent, path = make(tmp_path, kind="copilot")
+    write_record(time.time())
+    agent.close()
+    assert not record_file().exists()
+
+
+def test_trusted_kinds_write_no_record(tmp_path):
+    c, agent, path = make(tmp_path, kind="claude")
+    c.on_prompt = lambda fake, name, text, wait: (claude_user(path, text), fake.set_status(name, "working"))
+    with pytest.raises(AgentTimeoutError):
+        agent.ask("q", 0.2)
+    assert not record_file().exists()
+
+
+def test_queued_prompt_in_turns_of_their_own_is_ambiguous(tmp_path):
+    """D12: the second prompt was queued during the first turn and then got a turn of its own."""
+    path = tmp_path / "events.jsonl"
+    copilot_user(path, "first")
+    copilot_user(path, "second")
+    copilot_end(path, "answer one")
+    append_jsonl(path, {"type": "assistant.turn_start", "timestamp": iso(), "data": {}})
+    copilot_end(path, "answer two")
+    log = CopilotLog(str(path))
+    assert log.judge(0, prompt_digest("first")).outcome is A.Outcome.AMBIGUOUS
+    assert log.judge(0, prompt_digest("second")).outcome is A.Outcome.AMBIGUOUS
+
+
+# ---- task 13.21 at the handle level ------------------------------------------------------------------
+
+
+def test_unrecognized_screen_before_submitting_is_busy(tmp_path):
+    """Scenario: 屏幕不在可识别的输入状态 — herdr says idle, the screen bottom is not cursor's input area."""
+    c, agent, _ = make(tmp_path, kind="cursor", log=False)
+    c.recent = "Cursor Agent\n  some dialog we do not know\n  [y] yes  [n] no\n"
+    c.on_prompt = lambda fake, name, text, wait: None
+    with pytest.raises(AgentBusyError, match="recognizable input state"):
+        agent.ask("What is the answer?", 2)
+    assert not c.args_of("agent_prompt")
+
+
+def test_prompt_left_in_the_input_box_raises_instead_of_returning_the_status_line(tmp_path):
+    """Scenario: prompt 留在输入框里没有提交."""
+    c, agent, _ = make(tmp_path, kind="cursor", log=False)
+    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+
+    def on_prompt(fake, name, text, wait):  # typed into the input line, never submitted
+        fake.recent = f"older output\n→ {text}\n  Auto Balance   Run Everything\n"
+
+    c.on_prompt = on_prompt
+    with pytest.raises((ReplyNotFoundError, PromptNotDeliveredError)):
+        agent.ask("What is the answer?", 2)

@@ -9,6 +9,8 @@ from polyagent import kinds as K
 from polyagent.errors import InvalidPromptError
 
 POLICIES = ["full_auto", "read_only"]
+INPUT_AREA = {"codex": "› Ask Codex to do anything\n\n  gpt default · /tmp/repo\n",
+              "cursor": "  → Add a follow-up\n\n  Auto Balance   Run Everything\n"}
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +30,7 @@ def submitted(kind, policy, text, lock_home):
         return H_err_timeout()
 
     c.on_prompt = on_prompt
+    c.recent = INPUT_AREA.get(kind, "")  # screen-capture kinds only submit into a recognized input area (D12)
     agent = A.Agent(c, name="a", kind=kind, policy=policy, workspace_id="w1", pane_id="w1:p1", label="L")
     agent._log_path = None
     try:

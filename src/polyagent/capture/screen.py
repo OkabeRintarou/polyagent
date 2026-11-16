@@ -3,8 +3,8 @@
 The baseline is the tail of the pre-submit screen content (above the footer), together with the
 number n of times that block occurs on the pre-submit screen: the n-th occurrence is the pre-submit
 position. The reply is what follows this prompt's echo (first line, first 60 characters) after the
-n-th or a later occurrence, minus the prompt's continuation lines, up to the kind's footer marker,
-with bullet prefixes and timestamp lines removed. Earlier occurrences are followed by old content,
+n-th or a later occurrence, minus the prompt's continuation lines, up to the kind's footer (line
+markers or a bottom footer block), with bullet prefixes and timestamp lines removed. Earlier occurrences are followed by old content,
 whose echo may read the same (review N1).
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Sequence
 
 ECHO_CHARS = 60
 BASELINE_LINES = 3
@@ -22,17 +22,42 @@ TIMESTAMP_RE = re.compile(r"^\s*(?:Worked|Ran|Thought|Cooked|Churned) for \S+.*?
 
 @dataclass(frozen=True)
 class ScreenCapture:
-    footer: Sequence[re.Pattern[str]]
+    """``footer``: line markers; ``block``: a bottom footer block (``kinds.FooterBlock``), which
+    replaces the markers. Echo and reply only come from the content area: after the baseline position
+    and before the footer (D12 "内容区和页脚"); text in the input line is never an echo."""
 
-    def _content(self, lines: list[str]) -> list[str]:
-        """Lines above the first footer line."""
-        for i, line in enumerate(lines):
-            if any(p.search(line) for p in self.footer):
-                return lines[:i]
-        return lines
+    footer: Sequence[re.Pattern[str]]
+    block: Any = None
+
+    def _block_start(self, lines: list[str]) -> int | None:
+        b = self.block
+        idx = next((i for i in range(len(lines) - 1, -1, -1) if b.input_line.search(lines[i])), None)
+        if idx is None:
+            return None
+        after = [line for line in lines[idx + 1:] if line.strip()]
+        if len(after) > b.max_after:
+            return None
+        if b.status and not any(m.search(line) for line in after for m in b.status):
+            return None
+        return idx
+
+    def content_end(self, lines: list[str], start: int = 0) -> int | None:
+        """Index where the content area ends (the footer's first line) for content starting at
+        ``start``; ``None`` when the kind uses a footer block and the screen has none it recognizes."""
+        if self.block is not None:
+            end = self._block_start(lines)
+            return None if end is None else max(end, start)
+        return next((i for i in range(start, len(lines)) if any(p.search(lines[i]) for p in self.footer)),
+                    len(lines))
+
+    def recognized(self, screen: str) -> bool:
+        """The screen shows the kind's input area (always true for line markers)."""
+        return self.content_end(screen.splitlines()) is not None
 
     def baseline(self, screen: str) -> list[str]:
-        content = [line.rstrip() for line in self._content(screen.splitlines())]
+        lines = screen.splitlines()
+        end = self.content_end(lines)
+        content = [line.rstrip() for line in lines[:len(lines) if end is None else end]]
         tail = [line for line in content if line.strip()]
         return tail[-BASELINE_LINES:]
 
@@ -49,29 +74,35 @@ class ScreenCapture:
         """How many times the baseline block occurs on ``screen`` (recorded before submitting)."""
         return len(self._ends(screen.splitlines(), baseline)) if baseline else 0
 
-    def _candidates(self, lines: list[str], baseline: list[str], count: int) -> list[list[str]]:
-        """The text after the ``count``-th and each later occurrence of the baseline block, the last
-        occurrence first. A screen that scrolled shows fewer early occurrences, so the ``count``-th one
-        then lies at or after the pre-submit position: nothing found, or still the right place."""
+    def _starts(self, lines: list[str], baseline: list[str], count: int) -> list[int]:
+        """Where the content after the ``count``-th and each later occurrence of the baseline block
+        starts, the last occurrence first. A screen that scrolled shows fewer early occurrences, so the
+        ``count``-th one then lies at or after the pre-submit position: nothing found, or still the
+        right place."""
         if not baseline:
-            return [lines]
+            return [0]
         ends = self._ends(lines, baseline)[max(count, 1) - 1:]
-        return [lines[e + 1:] for e in reversed(ends)]
+        return [e + 1 for e in reversed(ends)]
 
     @staticmethod
     def _echo_key(echo_lines: list[str]) -> str:
         return next((line.strip() for line in echo_lines if line.strip()), "")[:ECHO_CHARS]
 
     def _locate_echo(self, screen: str, baseline: list[str], echo_lines: list[str], count: int) -> list[str] | None:
-        """Lines from this prompt's echo on: after the last baseline occurrence, from the ``count``-th
-        on, that is followed by the echo (identical questions and answers repeat the block, C11, N1)."""
+        """The content lines from this prompt's echo on: after the last baseline occurrence, from the
+        ``count``-th on, whose content area holds the echo (identical questions and answers repeat the
+        block, C11, N1). ``None`` without an echo or a recognizable footer."""
         key = self._echo_key(echo_lines)
         if not key:
             return None
-        for after in self._candidates(screen.splitlines(), baseline, count):
-            start = next((i for i, line in enumerate(after) if key in line), None)
-            if start is not None:
-                return after[start:]
+        lines = screen.splitlines()
+        for start in self._starts(lines, baseline, count):
+            end = self.content_end(lines, start)
+            if end is None:
+                return None
+            hit = next((i for i in range(start, end) if key in lines[i]), None)
+            if hit is not None:
+                return lines[hit:end]
         return None
 
     def echo_seen(self, screen: str, baseline: list[str], echo_lines: list[str], *, count: int) -> bool:
@@ -103,7 +134,7 @@ class ScreenCapture:
                 break
             pos = len(flat) - len(rest) + len(words)
             body = body[body.index(nxt) + 1:]
-        kept = [line.rstrip() for line in self._content(body) if not TIMESTAMP_RE.match(line)]
+        kept = [line.rstrip() for line in body if not TIMESTAMP_RE.match(line)]
         indent = min((len(x) - len(x.lstrip()) for x in kept if x.strip()), default=0)
         out: list[str] = []
         hanging = 0

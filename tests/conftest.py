@@ -18,6 +18,10 @@ REAL_WHICH = shutil.which
 ORIG_USER_HOME = locks.user_home
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "allow_internal_error: the test provokes a discussion internal_error on purpose")
+
+
 @pytest.fixture(autouse=True)
 def _never_real_herdr_or_home(request, tmp_path_factory, monkeypatch):
     """Unit tests never find the real herdr on PATH and never touch ~/.local/state (review T2)."""

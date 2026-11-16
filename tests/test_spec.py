@@ -306,7 +306,6 @@ def test_mcp_names_with_double_underscore(entry):
         ("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN, "LD_PRELOAD": "/x"}),
         ("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN, "CLAUDE_CODE_FOO": "1"}),
         ("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN, "ANTHROPIC_CUSTOM_HEADERS": "a b"}),
-        ("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN, "ANTHROPIC_CUSTOM_HEADERS": "a: b\nc: d"}),
         ("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN, "ANTHROPIC_CUSTOM_HEADERS": "a b: c"}),
         ("bedrock", {"CLAUDE_CODE_USE_BEDROCK": "1", "AWS_REGION": "r", "ANTHROPIC_BASE_URL": ENDPOINT}),
         ("official", {"ANTHROPIC_API_KEY": TOKEN}),
@@ -405,10 +404,23 @@ def test_custom_header_validation(headers):
         ClaudeProvider.compatible(ENDPOINT, auth_token=TOKEN, custom_headers=headers)
 
 
-def test_more_than_one_custom_header_is_refused_until_13_12():
-    with pytest.raises(InvalidConfigError) as ei:
-        ClaudeProvider.compatible(ENDPOINT, auth_token=TOKEN, custom_headers={"X-A": "1", "X-B": "2"})
-    assert "13.12" in str(ei.value)
+def test_several_custom_headers_one_per_line():
+    """Task 13.12 (verified with the local stub): several headers, values with colons and spaces verbatim."""
+    p = ClaudeProvider.compatible(ENDPOINT, auth_token=TOKEN,
+                                  custom_headers={"X-A": "1", "X-B": "v:with colon and  spaces", "X-C": HEADER_VALUE})
+    assert p.env()["ANTHROPIC_CUSTOM_HEADERS"] == f"X-A: 1\nX-B: v:with colon and  spaces\nX-C: {HEADER_VALUE}"
+    assert {"v:with colon and  spaces", HEADER_VALUE} <= set(p.secret_values())
+    direct = ClaudeProvider("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN,
+                                           "ANTHROPIC_CUSTOM_HEADERS": "X-A: 1\nX-B: 2"})
+    assert direct == ClaudeProvider.compatible(ENDPOINT, auth_token=TOKEN, custom_headers={"X-A": "1", "X-B": "2"})
+
+
+@pytest.mark.parametrize("text", ["X-A: 1\r\nX-B: 2", "X-A: 1\nX-B: 2\x00", "X-A: 1\n\nX-B: 2", "X-A: 1\nbad line",
+                                  "X-A: 1\nX-B: \x1b[0m"])
+def test_directly_constructed_header_lines_are_still_checked(text):
+    with pytest.raises(InvalidConfigError):
+        ClaudeProvider("compatible", {"ANTHROPIC_BASE_URL": ENDPOINT, "ANTHROPIC_AUTH_TOKEN": TOKEN,
+                                      "ANTHROPIC_CUSTOM_HEADERS": text})
 
 
 def test_custom_headers_only_for_compatible():

@@ -1,12 +1,11 @@
 """Task 8.1: self-tests of the real-agent safety lab (design D17). No agent is started here."""
 
 import os
+import secrets
 import shutil
 import stat
 import subprocess
-import tempfile
 import time
-from pathlib import Path
 
 import pytest
 
@@ -155,26 +154,29 @@ def test_lab_names_are_generated_and_new(real_herdr):
         AgentLab(real_herdr, name="default")  # type: ignore[call-arg]
 
 
-def test_escapes_outside_the_watched_files_are_found(real_herdr):
+def test_escapes_outside_the_watched_files_are_found(real_herdr, tmp_path):
     """Review C1/T9: entries outside the root that carry its name, in any form, or files changed during the
-    lab whose content names it, are found without any list of known paths."""
-    lab = AgentLab(real_herdr, tag="escape")
-    planted = []
-    try:
-        with lab:
-            cache = HOME / ".cache" / f"pa-escape-probe-{lab.nonce[:8]}"
-            cache.mkdir(parents=True)
-            planted.append(cache)
-            (cache / f"-tmp-{_norm(lab.root.name)}-w-claude").mkdir()  # claude's encoding of a lab directory
-            content = Path(tempfile.gettempdir()) / f"pa-escape-content-{lab.nonce[:8]}.log"
-            planted.append(content)
-            content.write_text(f"session started in {lab.root}/w/x\n")  # a log that only mentions it
-        problems = " ".join(lab.problems)
-        assert "carry its name" in problems
-        assert str(cache / f"-tmp-{_norm(lab.root.name)}-w-claude") in problems and str(content) in problems
-    finally:
-        for p in planted:
-            shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
+    lab whose content names it, are found without any list of known paths. A temporary home and
+    temporary directory stand in for the user's (task 8.10)."""
+    home, tmp = tmp_path / "home", tmp_path / "tmp"
+    (home / ".cache").mkdir(parents=True)
+    tmp.mkdir()
+    lab = AgentLab(real_herdr, tag="escape", home=home, tmpdir=tmp)
+    with lab:
+        cache = home / ".cache" / "probe"
+        cache.mkdir()
+        (cache / f"-tmp-{_norm(lab.root.name)}-w-claude").mkdir()  # claude's encoding of a lab directory
+        content = tmp / "probe.log"
+        content.write_text(f"session started in {lab.root}/w/x\n")  # a log that only mentions it
+        top = home / f"notes-{lab.root.name}.txt"  # a regular file at the top of the home directory
+        top.write_text("")
+        allowed = home / ".cursor" / "ai-tracking" / f"{lab.root.name}.db"  # cursor may name it there
+        allowed.parent.mkdir(parents=True)
+        allowed.write_text(str(lab.root))
+    problems = " ".join(lab.problems)
+    assert "carry its name" in problems
+    assert str(cache / f"-tmp-{_norm(lab.root.name)}-w-claude") in problems and str(content) in problems
+    assert str(top) in problems and str(allowed) not in problems
 
 
 def test_preflight_reports_leftovers_of_a_killed_run(real_herdr, tmp_path):
@@ -317,3 +319,109 @@ def test_preflight_reports_a_left_over_test_session(real_herdr):
                                  capture_output=True, text=True, timeout=60)
             assert json.loads(out.stdout).get("deleted"), out.stderr
     assert name not in session_names(real_herdr)
+
+
+# ---- task 8.10 --------------------------------------------------------------------------------------
+
+
+def test_lab_pane_history_goes_to_the_lab_root(real_herdr, tmp_path):
+    """A command typed into a lab pane ends up in the lab root's history file when the shell exits, not in
+    the user's history (D17: HISTFILE of the lab's server)."""
+    import json as _json
+
+    from .agentlab import HISTORY_FILES
+
+    marker = f"pa_hist_{secrets.token_hex(6)}"
+    lab = AgentLab(real_herdr, tag="hist")
+    with lab:
+        w = lab.work("h")
+        out = lab.herdr("workspace", "create", "--cwd", str(w), "--label", "pa-hist-probe", "--no-focus")
+        created = _json.loads(out.stdout)["result"]
+        pane, wid = created["root_pane"]["pane_id"], created["workspace"]["workspace_id"]
+        time.sleep(1.0)  # let the shell print its prompt
+        assert lab.herdr("pane", "run", pane, f"echo {marker}").returncode == 0
+        assert lab.herdr("pane", "run", pane, "exit").returncode == 0
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not (lab.histfile.exists() and marker in lab.histfile.read_text()):
+            time.sleep(0.2)
+        assert lab.histfile.exists() and marker in lab.histfile.read_text()
+        lab.herdr("workspace", "close", wid)
+    assert lab.problems == []
+    for rel in HISTORY_FILES:
+        p = HOME / rel
+        if p.exists():
+            assert marker.encode() not in p.read_bytes(), f"the marker reached the user's {rel}"
+
+
+def test_history_check_reports_growth_of_the_preparation_sentinel(tmp_path):
+    from .agentlab import PREP_SENTINEL, history_growth, history_sentinels
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bash_history").write_bytes(b"ls\n" + PREP_SENTINEL + b"\n")
+    before = history_sentinels(home)
+    assert history_growth(before, history_sentinels(home)) == []
+    with open(home / ".bash_history", "ab") as f:
+        f.write(b". /run/x.sh && echo " + PREP_SENTINEL + b"\n")
+    assert history_growth(before, history_sentinels(home)) == [f"{home / '.bash_history'} (1 -> 2)"]
+
+
+def test_escape_check_counts_only_the_current_users_entries(tmp_path):
+    from .agentlab import find_escapes
+
+    root = tmp_path / "tmp" / "pa-it-x-abc"
+    root.mkdir(parents=True)
+    (tmp_path / "home").mkdir()
+    (tmp_path / "tmp" / f"other-{root.name}").write_text("")
+    args = dict(home=tmp_path / "home", tmp=tmp_path / "tmp")
+    assert find_escapes(root, 0, **args) == [str(tmp_path / "tmp" / f"other-{root.name}")]
+    assert find_escapes(root, 0, uid=os.getuid() + 1, **args) == []
+
+
+def test_cursor_socket_is_kept_when_bindings_cannot_be_read(tmp_path, monkeypatch):
+    import socket
+
+    from . import agentlab
+
+    before = set(tmp_path.glob("cursor-askpass-*"))
+    dead = tmp_path / "cursor-askpass-dead.sock"
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(str(dead))
+    s.close()
+    (tmp_path / "cursor-askpass-plain").write_text("")  # not a socket: never touched
+    monkeypatch.setattr(agentlab, "bound_unix_paths", lambda: None)
+    removed, problems = agentlab.clean_cursor_sockets(before, time.time() - 5, tmp=tmp_path)
+    assert removed == [] and dead.exists() and (tmp_path / "cursor-askpass-plain").exists()
+    assert any("could not be read" in p for p in problems)
+
+
+def test_preflight_ignores_other_users_and_separates_half_finished_copies(tmp_path, monkeypatch):
+    from . import agentlab
+
+    tmp, store = tmp_path / "tmp", tmp_path / "backup"
+    (tmp / "pa-it-theirs-1").mkdir(parents=True)
+    (tmp / "pa-it-mine-1").mkdir()
+    (store / "staging-abc").mkdir(parents=True)
+    real_uid = agentlab._uid_of
+    monkeypatch.setattr(agentlab, "_uid_of",
+                        lambda p: os.getuid() + 1 if "theirs" in str(p) else real_uid(p))
+    monkeypatch.setattr(agentlab, "session_names", lambda real: set())
+    problems = agentlab.preflight("herdr", tmp=tmp, backup_root=store)
+    text = " ".join(problems)
+    assert "pa-it-mine-1" in text and "pa-it-theirs-1" not in text
+    assert "half-finished" in text and "complete backup" not in text
+    (store / "current").mkdir()
+    assert any("complete backup" in p for p in agentlab.preflight("herdr", tmp=tmp, backup_root=store))
+
+
+def test_foreign_cursor_check_ignores_other_programs_named_agent(tmp_path):
+    from .agentlab import foreign_cursor_processes
+
+    exe = tmp_path / "agent"
+    exe.symlink_to(shutil.which("sleep"))
+    p = subprocess.Popen([str(exe), "30"])
+    try:
+        assert p.pid not in foreign_cursor_processes()
+    finally:
+        p.kill()
+        p.wait()

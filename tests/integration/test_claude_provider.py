@@ -124,3 +124,16 @@ def test_custom_header_only_on_its_instance(agent_lab):
     assert without.records and all("x-pa-test" not in r["header_names"] for r in without.records)
     in_ps = value in subprocess.run(["ps", "-eww", "-o", "args"], capture_output=True, text=True).stdout
     assert not in_ps, "the header value is in a process command line"  # never print the process list (T8)
+
+
+def test_several_custom_headers_arrive_verbatim(agent_lab):
+    """Task 13.12: several headers, one per line in ANTHROPIC_CUSTOM_HEADERS; a value with colons and
+    spaces arrives as given."""
+    require_kind("claude", login=False)
+    s = stub(agent_lab)
+    headers = {"X-Pa-One": "first", "X-Pa-Two": "v:with colon:and  two spaces", "X-Pa-Three": "a=b; c"}
+    agent = agent_lab.start("claude", agent_lab.work("hdrs"), provider=ClaudeProvider.compatible(
+        s.url, auth_token=TOKEN, model="stub-model-x", custom_headers=headers))
+    agent.ask("hello headers", 120)
+    want = {k.lower(): v for k, v in headers.items()}
+    assert s.main_requests() and all(r["test_headers"] == want for r in s.main_requests())

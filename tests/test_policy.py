@@ -452,7 +452,14 @@ def test_build_args_rechecks_reserved_options(repo):
 
 
 @pytest.mark.parametrize("kind,name", [("claude", "CLAUDE_FOO"), ("claude", "CLAUDE_AGENT_SDK_X"),
-                                       ("copilot", "USE_BUILTIN_RIPGREP"), ("copilot", "USE_TGREP")])
+                                       ("copilot", "USE_BUILTIN_RIPGREP"), ("copilot", "USE_TGREP"),
+                                       # task 13.11: documented variables without the kind's prefix
+                                       ("copilot", "GH_HOST"),
+                                       ("copilot", "EDITOR"), ("copilot", "VISUAL"), ("claude", "EDITOR"),
+                                       ("claude", "NODE_PATH"), ("claude", "USE_BUILTIN_RIPGREP"),
+                                       ("claude", "ENABLE_TOOL_SEARCH"), ("claude", "ENABLE_CLAUDEAI_MCP_SERVERS"),
+                                       ("claude", "BETA_TRACING_ENDPOINT"), ("claude", "ENABLE_BETA_TRACING_DETAILED"),
+                                       ("claude", "FORCE_AUTOUPDATE_PLUGINS")])
 def test_new_variable_families_refused_under_read_only(kind, name, repo):
     with pytest.raises(PolicyNotSupportedError):
         P.check_static(ro(kind, env={name: "1"}), repo)

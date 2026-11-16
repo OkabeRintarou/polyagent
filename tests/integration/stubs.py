@@ -106,7 +106,10 @@ class AnthropicStub:
             "t": time.time(), "model": body.get("model"), "tools": tools, "user_text": clean[:300],
             "header_names": sorted(k.lower() for k in req.headers.keys()),
             "test_headers": {k.lower(): v for k, v in req.headers.items() if k.lower().startswith(TEST_HEADER_PREFIX)},
-            "tool_results": [{"is_error": bool(r.get("is_error")), "content": str(r.get("content"))[:200]} for r in results],
+            "tool_results": [{"is_error": bool(r.get("is_error")), "content": str(r.get("content"))[:2000]} for r in results],
+            # Kept in memory only (task 13.2): the full tool definitions and the system text, which is where a
+            # CLI lists tools it loads on demand. Requests carry no credentials (headers: names only above).
+            "body": body,
         }
         with self.lock:
             self.records.append(rec)
@@ -123,6 +126,9 @@ class AnthropicStub:
                 "DO_READ": ("Read", {"file_path": arg}),
                 "DO_MCP_PING": ("mcp__stub__ping", {}),
                 "DO_MCP_PONG": ("mcp__stub__pong", {}),
+                # Task 13.2: ask claude's deferred-tool search for a tool by name.
+                "DO_TOOLSEARCH": ("ToolSearch", {"query": f"select:{arg}", "max_results": 5}),
+                "DO_TOOLSEARCHKW": ("ToolSearch", {"query": arg, "max_results": 10}),
             }.get(kw)
             if call:
                 return self._stream(req, body, [("tool_use", call)], "tool_use")

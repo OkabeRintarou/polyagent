@@ -98,7 +98,7 @@ def test_enum_values_match_the_spec():
 def test_enum_members_are_stored_as_plain_strings():
     m = Message(1, 0, "a", None, MessageType.REPLY, "x", MessageStatus.OK, ReplySource.SCREEN, "t", 0.0)
     assert type(m.type) is str and type(m.status) is str and type(m.reply_source) is str
-    assert json.dumps(m.to_dict())
+    assert json.loads(json.dumps(m.to_dict()))["type"] == "reply"
 
 
 @pytest.mark.parametrize("field,value", [("type", "opinion"), ("status", "done"), ("reply_source", "file")])

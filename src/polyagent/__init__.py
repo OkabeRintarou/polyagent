@@ -1,4 +1,18 @@
-"""polyagent: drive locally installed coding-agent CLIs through herdr from Python."""
+"""polyagent: drive locally installed coding-agent CLIs (codex, copilot, cursor, claude) through herdr
+from Python, and let several of them discuss a requirement under a coordinator agent.
+
+Read the README before deploying it. In short:
+
+* an agent started on its own runs ``full_auto`` by default: it can write files, run any command, use
+  the web and every configured MCP tool, and read the variables and provider credentials injected into
+  it. Choose ``ToolPolicy.READ_ONLY`` for untrusted repositories or untrusted input;
+* discussion members always run ``read_only``;
+* ``read_only`` relies on the user's agent CLI configuration and shell start-up files not having been
+  changed by a ``full_auto`` agent of the same operating-system user: run them as different users.
+
+Entry points: :class:`PolyAgent` (one herdr session), :class:`AgentSpec`, :class:`Agent`,
+:class:`Discussion`, :class:`SummaryTemplate`, :class:`DiscussionRecord`.
+"""
 
 from .errors import (
     AgentBlockedError,

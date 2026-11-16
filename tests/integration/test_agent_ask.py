@@ -32,18 +32,21 @@ def test_pong_and_a_multi_step_markdown_answer(agent_lab, kind):
         assert "**" in second.text and any(line.lstrip().startswith(("-", "*")) for line in second.text.splitlines())
 
 
+# copilot: a timeout so short that the first prompt is not in the session log yet when the second ask
+# starts; the submission record (task 7.10, D11) makes the second ask wait for it. claude: long enough for
+# the delivery to be confirmed.
+FIRST_TIMEOUT = {"claude": 8, "copilot": 1}
+
+
 @pytest.mark.parametrize("kind", ["claude", "copilot"])
 def test_timeout_then_ask_again_then_wait_reply(agent_lab, kind):
-    """Scenarios: 超时 / 超时后再次提问 / 超时后取回该轮回复 / 工作中的 agent 被报告为空闲 (copilot).
-
-    The 8-second timeout relies on copilot creating its session log within 8 seconds; if it is slower, the
-    second prompt can join the first turn (phase-5 finding P5-2, design question A4) and both asks end
-    with "attribution unclear" (review T6). Answers also depend on the model (T7): rerun once before
-    treating a failure as a regression."""
+    """Scenarios: 超时 / 超时后再次提问 / 超时后取回该轮回复 / 工作中的 agent 被报告为空闲 (copilot) /
+    上一次提交还没有出现在会话日志里 (copilot, task 7.10). Answers depend on the model (review T7): rerun
+    once before treating a failure as a regression."""
     require_kind(kind)
     agent = agent_lab.start(kind, agent_lab.work(kind, files=FILES))
-    with pytest.raises(AgentTimeoutError) as ei:  # long enough for the delivery to be confirmed
-        agent.ask("Run the shell command `sleep 15` and wait for it to finish. Then: " + MULTI, 8)
+    with pytest.raises(AgentTimeoutError) as ei:
+        agent.ask("Run the shell command `sleep 15` and wait for it to finish. Then: " + MULTI, FIRST_TIMEOUT[kind])
     pending = ei.value.pending
     assert pending and pending["source"] == "session_log"
     # The first turn is still running: the second prompt goes in only after it, and its reply is its own.

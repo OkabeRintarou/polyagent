@@ -194,6 +194,9 @@ def _error(value: Any, what: str) -> dict[str, str] | None:
 
 @dataclass
 class Member:
+    """A discussion member: name, role, kind, model, provider type name (never its variables) and
+    whether it is still available."""
+
     name: str
     role: str
     kind: str
@@ -202,6 +205,7 @@ class Member:
     available: bool = True
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-native form (a fresh copy)."""
         return {"name": self.name, "role": self.role, "kind": self.kind, "model": self.model,
                 "provider": self.provider, "available": self.available}
 
@@ -237,6 +241,7 @@ class Message:
         self.reply_source = _enum(ReplySource, self.reply_source, "message.reply_source", True)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-native form (a fresh copy)."""
         return {"seq": self.seq, "round": self.round, "sender": self.sender, "receiver": self.receiver,
                 "type": self.type, "content": copy.deepcopy(self.content), "status": self.status,
                 "reply_source": self.reply_source, "started_at": self.started_at, "duration": self.duration}
@@ -245,7 +250,10 @@ class Message:
     def from_dict(cls, data: Any) -> "Message":
         d = _keys(data, "message", ("seq", "round", "sender", "receiver", "type", "content", "status",
                                     "reply_source", "started_at", "duration"))
-        return cls(_int(d["seq"], "message.seq"), _int(d["round"], "message.round"),
+        seq = _int(d["seq"], "message.seq")
+        if seq < 1:
+            raise _bad("message.seq must be at least 1")
+        return cls(seq, _int(d["round"], "message.round"),
                    _str(d["sender"], "message.sender"), _str(d["receiver"], "message.receiver", True),  # type: ignore[arg-type]
                    d["type"], _json(d["content"], "message.content"), d["status"], d["reply_source"],
                    _time(d["started_at"], "message.started_at"), _number(d["duration"], "message.duration"))  # type: ignore[arg-type]
@@ -265,6 +273,7 @@ class Event:
         self.type = _enum(EventType, self.type, "event.type")  # type: ignore[assignment]
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-native form (a fresh copy)."""
         return {"seq": self.seq, "type": self.type, "discussion_id": self.discussion_id, "at": self.at,
                 "payload": copy.deepcopy(self.payload)}
 
@@ -285,6 +294,11 @@ _RECORD_KEYS = ("schema_version", "id", "status", "end_reason", "error", "requir
 
 @dataclass
 class DiscussionRecord:
+    """The whole discussion: status (``running``, ``completed``, ``failed``, ``cancelled``), end reason,
+    error, requirement, brief, members, messages, summary (only when ``completed``), the template
+    snapshot and times. :meth:`to_dict` / :meth:`from_dict` round-trip through JSON; caller credentials
+    are replaced by ``***``. ``from_dict`` raises ``InvalidConfigError`` for any malformed record."""
+
     id: str
     requirement: str
     template: dict[str, Any]
@@ -304,9 +318,11 @@ class DiscussionRecord:
         self.end_reason = _enum(EndReason, self.end_reason, "end_reason", True)
 
     def member(self, name: str) -> Member:
+        """The member called ``name``."""
         return next(m for m in self.members if m.name == name)
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-native form (a fresh copy, sharing nothing with the record)."""
         return {
             "schema_version": self.schema_version,
             "id": self.id,

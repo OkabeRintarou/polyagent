@@ -15,13 +15,18 @@ What it guarantees for every test that uses it:
 * content digests of the user's agent configuration, installs and entry links are compared before
   and after: any difference fails the test;
 * ``TMPDIR`` and ``XDG_CACHE_HOME`` of the server (and so of every pane and agent) point under the
-  root too (claude and cursor write logs, sockets and caches there; herdr itself ignores both);
+  root too (claude and cursor write logs, sockets and caches there; herdr itself ignores both), and so
+  does ``HISTFILE``: a pane's interactive shell writes the command lines herdr typed to it when it
+  exits, and the library unsets the history file only in panes it prepares (D6, D17);
 * teardown, also after a failure: close the agents, stop and delete the session, kill processes that
   inherited the lab's nonce (detached helpers), delete the root;
 * a check that does not depend on any list of known paths: after teardown, no entry in the user's
-  configuration directories, ``~/.cache`` or the system temporary directory may carry the root's name,
-  and no file there changed during the lab may contain it; for cursor, the whole ``~/.cursor`` tree
-  (names and content) must be as before;
+  configuration directories, ``~/.cache``, the system temporary directory or the regular files at the
+  top of the home directory may carry the root's name, and no file there changed during the lab may
+  contain it. Only the current user's entries count; cursor's "allowed to change" paths are left out.
+  Limits: ``LEAK_DEPTH`` directory levels per area, files up to ``LEAK_MAX_BYTES``. In addition the
+  library's preparation sentinel must not appear more often in the user's shell history files than
+  before. For cursor, the whole ``~/.cursor`` tree (names and content) must be as before;
 * a pre-flight check per pytest session: leftovers of a run that was killed (processes with a lab
   nonce, ``pa-it-*`` roots, ``polyagent-test-*`` sessions, a backup) stop the run with instructions.
 
@@ -94,6 +99,10 @@ CURSOR_SWITCH = "POLYAGENT_INTEGRATION_CURSOR"  # real cursor runs only with thi
 LEAK_AREAS = [".codex", ".copilot", ".claude", ".cursor", ".config", ".cache", ".local/state", ".local/share"]
 LEAK_DEPTH = 5
 LEAK_MAX_BYTES = 8 << 20
+# The library's pane preparation command line ends with this sentinel (``_launch.prep_command``): its count
+# in the user's shell history must not grow during a lab (D17, phase-5 final review).
+PREP_SENTINEL = b"__pa_env_ok_$((1+1))"
+HISTORY_FILES = (".bash_history", ".sh_history", ".zsh_history", ".histfile", ".local/share/fish/fish_history")
 # Variables the lab's server (and so every pane and agent) inherits from the caller; nothing else
 # (review C7): no provider or CLI variables of the shell pytest runs in.
 SERVER_ENV_KEEP = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "TERM", "COLORTERM", "TZ",
@@ -226,57 +235,101 @@ def _norm(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", text)
 
 
-def find_escapes(root: Path, since: float, home: Path = HOME, tmp: Path | None = None) -> list[str]:
+def find_escapes(root: Path, since: float, home: Path = HOME, tmp: Path | None = None,
+                 uid: int | None = None) -> list[str]:
     """Entries outside ``root`` that belong to it: a name containing the root's name (also with its
     punctuation replaced), or a file changed since ``since`` whose content contains the root path or
-    name. Searched in the user's configuration directories, ``~/.cache`` and the temporary directory."""
+    name. Searched in the user's configuration directories, ``~/.cache``, the temporary directory
+    (``LEAK_DEPTH`` levels each) and the regular files at the top of the home directory. Only entries
+    of ``uid`` (default: the current user) count; cursor's "allowed to change" paths are left out
+    (D17: they may legitimately name a lab directory)."""
+    uid = os.getuid() if uid is None else uid
     token = _norm(root.name)
     needles = {str(root).encode(), root.name.encode()}
-    areas = [home / a for a in LEAK_AREAS] + [tmp or Path(tempfile.gettempdir())]
+    allowed = [home / a for a in CURSOR_ALLOWED_CHANGES]
     found = []
-    for area in areas:
+
+    def check(p: Path, is_file: bool) -> None:
+        try:
+            st = os.lstat(p)
+        except OSError:
+            return
+        if st.st_uid != uid or any(p == a or a in p.parents for a in allowed):
+            return
+        if token in _norm(p.name):
+            found.append(str(p))
+            return
+        if not is_file or st.st_mtime < since or st.st_size > LEAK_MAX_BYTES or not stat.S_ISREG(st.st_mode):
+            return
+        try:
+            data = p.read_bytes()
+        except OSError:
+            return
+        if any(x in data for x in needles):
+            found.append(str(p))
+
+    for area in [home / a for a in LEAK_AREAS] + [tmp or Path(tempfile.gettempdir())]:
         if not area.is_dir():
             continue
         base = len(area.parts)
         for dirpath, dirs, files in os.walk(area):
             here = Path(dirpath)
-            if here == root or root in here.parents:
+            if here == root or root in here.parents or any(here == a or a in here.parents for a in allowed):
                 dirs[:] = []
                 continue
             if len(here.parts) - base >= LEAK_DEPTH:
                 dirs[:] = []
-            for n in dirs + files:
-                p = here / n
-                if p == root:
-                    continue
-                if token in _norm(n):
-                    found.append(str(p))
-                    continue
-                if n in files:
-                    try:
-                        st = os.lstat(p)
-                        if st.st_mtime < since or st.st_size > LEAK_MAX_BYTES or not stat.S_ISREG(st.st_mode):
-                            continue
-                        data = p.read_bytes()
-                    except OSError:
-                        continue
-                    if any(x in data for x in needles):
-                        found.append(str(p))
+            for n in dirs:
+                if here / n != root:
+                    check(here / n, False)
+            for n in files:
+                check(here / n, True)
+    with contextlib.suppress(OSError):
+        for entry in os.scandir(home):  # the home directory's own top-level regular files
+            if entry.is_file(follow_symlinks=False):
+                check(Path(entry.path), True)
     return sorted(set(found))
 
 
-def preflight(real_herdr: str, tmp: Path | None = None) -> list[str]:
+def history_sentinels(home: Path = HOME) -> dict[str, int]:
+    """How often the library's preparation sentinel occurs in each of the user's shell history files."""
+    paths = {home / rel for rel in HISTORY_FILES}
+    if os.environ.get("HISTFILE"):
+        paths.add(Path(os.environ["HISTFILE"]))
+    out = {}
+    for p in sorted(paths):
+        with contextlib.suppress(OSError):
+            out[str(p)] = p.read_bytes().count(PREP_SENTINEL)
+    return out
+
+
+def history_growth(before: dict[str, int], after: dict[str, int]) -> list[str]:
+    return [f"{p} ({before.get(p, 0)} -> {n})" for p, n in after.items() if n > before.get(p, 0)]
+
+
+def _uid_of(p: Path) -> int | None:
+    try:
+        return os.stat(p).st_uid
+    except OSError:
+        return None
+
+
+def preflight(real_herdr: str, tmp: Path | None = None, backup_root: Path | None = None) -> list[str]:
     """Leftovers of an earlier run that was killed before its teardown (review C3). Nothing is removed
-    here: they may hold copied credentials or the user's backed-up files."""
+    here: they may hold copied credentials or the user's backed-up files. Only the current user's
+    processes and roots count (another user's lab is not ours to report)."""
+    backup_root = backup_root or BACKUP_ROOT
     problems = []
     lab_procs = []
+    uid = os.getuid()
     for d in Path("/proc").iterdir():
-        if d.name.isdigit() and int(d.name) != os.getpid() and f"{NONCE_VAR}=".encode() in _environ(int(d.name)):
+        if (d.name.isdigit() and int(d.name) != os.getpid() and _uid_of(d) == uid
+                and f"{NONCE_VAR}=".encode() in _environ(int(d.name))):
             lab_procs.append(d.name)
     if lab_procs:
         problems.append(f"processes started by an earlier lab are still running (pids {', '.join(lab_procs)}): "
                         f"check `tr '\\0' '\\n' < /proc/<pid>/environ | grep {NONCE_VAR}` and stop them")
-    roots = sorted(str(p) for p in (tmp or Path(tempfile.gettempdir())).glob("pa-it-*"))
+    roots = sorted(str(p) for p in (tmp or Path(tempfile.gettempdir())).glob("pa-it-*") if _uid_of(p) == uid)
     if roots:
         problems.append(f"lab roots of an earlier run are left (they hold copied credentials): {roots}; "
                         "stop their processes first, then delete them")
@@ -284,35 +337,46 @@ def preflight(real_herdr: str, tmp: Path | None = None) -> list[str]:
     if sessions:
         problems.append(f"herdr sessions of an earlier run are left: {sessions}; "
                         "`herdr session stop <name>` then `herdr session delete <name>`")
-    if BACKUP_ROOT.exists() and any(BACKUP_ROOT.iterdir()):
-        problems.append(f"a backup of the user's files from an earlier run is at {BACKUP_ROOT}: restore it by hand "
-                        "(see manifest.json) and remove it")
+    if (backup_root / "current").exists():
+        problems.append(f"a complete backup of the user's files from an earlier run is at {backup_root / 'current'}: "
+                        "restore it by hand (see manifest.json) and remove it")
+    staging = sorted(str(p) for p in backup_root.glob("staging-*")) if backup_root.is_dir() else []
+    if staging:
+        problems.append(f"half-finished backup copies of an earlier run are at {staging}: the user's files were "
+                        "not changed by them (the copy failed before the backup existed); remove them")
     return problems
 
 
 CURSOR_SOCKETS = "cursor-askpass-*"  # cursor ignores TMPDIR for these (phase-5 fix run)
 
 
-def bound_unix_paths() -> set[str]:
+def bound_unix_paths() -> set[str] | None:
+    """Paths of bound unix sockets, or ``None`` when that cannot be read (then nothing is removed)."""
     try:
         lines = Path("/proc/net/unix").read_text().splitlines()[1:]
     except OSError:
-        return set()
+        return None
     return {parts[-1] for parts in (line.split() for line in lines) if len(parts) >= 8}
 
 
 def clean_cursor_sockets(before: set[Path], since: float, tmp: Path | None = None) -> tuple[list[str], list[str]]:
     """cursor's askpass sockets created during the lab in the system temporary directory: the dead ones
     (no process has them bound) are the lab's leftovers and are removed; a bound one is reported.
+    Only entries that are new, belong to the current user and really are sockets are considered;
+    when the binding information cannot be read nothing is removed and that is reported (D17).
     Sockets that existed before the lab are never touched. Returns (removed, problems)."""
     tmp = tmp or Path(tempfile.gettempdir())
     bound = bound_unix_paths()
     removed, problems = [], []
     for p in sorted(set(tmp.glob(CURSOR_SOCKETS)) - before):
         try:
-            if os.lstat(p).st_mtime < since:
-                continue
+            st = os.lstat(p)
         except OSError:
+            continue
+        if st.st_mtime < since or st.st_uid != os.getuid() or not stat.S_ISSOCK(st.st_mode):
+            continue
+        if bound is None:
+            problems.append(f"cursor socket {p} left in place: the bound-socket table could not be read")
             continue
         if str(p) in bound:
             problems.append(f"cursor socket {p} created during the lab is still bound")
@@ -323,20 +387,27 @@ def clean_cursor_sockets(before: set[Path], since: float, tmp: Path | None = Non
 
 
 def foreign_cursor_processes(nonce: str | None = None) -> list[int]:
-    """cursor-agent processes that are not the lab's: the user's own cursor would race the backup/restore."""
+    """cursor-agent processes of the current user that are not the lab's: the user's own cursor would race
+    the backup/restore. Only cursor's executable counts: a process whose binary lies in cursor's install
+    directory, or whose first arguments name a file there; a command line that merely mentions the name
+    (a shell running a grep) or another program called `agent` does not (D17)."""
     mark = f"{NONCE_VAR}=".encode()
+    install = str(HOME / ".local/share/cursor-agent") + os.sep
+    uid = os.getuid()
     pids = []
     for d in Path("/proc").iterdir():
-        if not d.name.isdigit():
+        if not d.name.isdigit() or _uid_of(d) != uid:
             continue
         try:
             argv = (d / "cmdline").read_bytes().split(b"\0")
         except OSError:
             continue
-        # The executable itself (`cursor-agent`, its `agent` alias, or node running a file of its install),
-        # not any process whose command line merely mentions the name (review: a shell running a grep).
-        exe = os.path.basename(argv[0]) in (b"cursor-agent", b"agent")
-        if (exe or any(b"/cursor-agent/versions/" in a for a in argv[:3])) and mark not in _environ(int(d.name)):
+        try:
+            exe = os.path.realpath(os.readlink(d / "exe"))
+        except OSError:
+            exe = ""
+        ours = exe.startswith(install) or any(b"/cursor-agent/versions/" in a for a in argv[:3])
+        if ours and mark not in _environ(int(d.name)):
             pids.append(int(d.name))
     return pids
 
@@ -663,6 +734,9 @@ class AgentLab:
     real_herdr: str
     server_env: dict[str, str] = field(default_factory=dict)  # extra variables for the server (8.5)
     tag: str = "lab"
+    # Where the escape and shell-history checks look; self-tests use temporary ones (D17, task 8.10).
+    home: Path = HOME
+    tmpdir: Path | None = None
     name: str = field(init=False)  # always generated here, never given by a caller
     root: Path = field(init=False)
     pa: PolyAgent = field(init=False)
@@ -676,11 +750,14 @@ class AgentLab:
         self.owns_session = False
         self._cursor_guard: UserFileGuard | None = None
         self.cursor_before: dict[str, Any] | None = None
+        self.lab_pids: set[int] = set()  # recorded while the lab runs (cursor names its markers after them)
+        self.running_dir_existed = True
 
     # -- setup
     def __enter__(self) -> AgentLab:
         self.started_at = time.time() - 1
         self.digest_before = user_config_digest()
+        self.history_before = history_sentinels(self.home)
         self.sessions_before = session_names(self.real_herdr)
         if self.name in self.sessions_before:  # never adopt an existing session
             raise RuntimeError(f"session {self.name} already exists")
@@ -718,10 +795,14 @@ class AgentLab:
         # claude and cursor write logs, sockets and caches there (phase-5 review C1); herdr ignores both.
         env["TMPDIR"] = str(self.root / "tmp")
         env["XDG_CACHE_HOME"] = str(self.root / "cache")
+        # Pane shells write the typed command lines here when they exit, not to the user's history (D17).
+        self.histfile = self.root / "shell_history"
+        env["HISTFILE"] = str(self.histfile)
         env[NONCE_VAR] = self.nonce
         # Any server launch (also a restart by the library) must carry the isolated homes and the nonce.
         self.shim = build_shim(self.root / "shim", self.real_herdr, self.name, self.log, self.refused,
-                               server_env={**{k: str(v) for k, v in homes.items()}, NONCE_VAR: self.nonce})
+                               server_env={**{k: str(v) for k, v in homes.items()}, NONCE_VAR: self.nonce,
+                                           "HISTFILE": str(self.histfile)})
         self.homes = homes
         self.env = env
         self.owns_session = True
@@ -779,17 +860,20 @@ class AgentLab:
     def start(self, kind: str, cwd: Path, policy: str | None = None, *, name: str | None = None,
               start_timeout: float = 90, **kw: Any):
         require_kind(kind, policy, login=not (kind == "claude" and "provider" in kw))
-        self.prepare(kind)
-        spec = self.spec(kind, policy, **kw)
-        shell = os.path.basename(os.environ.get("SHELL", ""))
-        if _launch.needs_prep(spec, K.adapter(kind)) and shell not in _launch.POSIX_SHELLS:
-            pytest.skip(f"{kind}: the pane shell {shell!r} is refused for the environment script (task 13.17)")
-        if kind == "cursor" and os.environ.get(CURSOR_SWITCH) != "1":
+        if kind == "cursor" and os.environ.get(CURSOR_SWITCH) != "1":  # checked before any login state is copied
             pytest.skip(f"cursor: it writes into the user's ~/.cursor although its configuration is isolated "
                         f"(design D17); set {CURSOR_SWITCH}=1 to run it")
+        shell = os.path.basename(os.environ.get("SHELL", ""))
+        if _launch.needs_prep(self.spec(kind, policy, **kw), K.adapter(kind)) and shell not in _launch.POSIX_SHELLS:
+            pytest.skip(f"{kind}: the pane shell {shell!r} is refused for the environment script (task 13.17)")
+        self.prepare(kind)
+        spec = self.spec(kind, policy, **kw)
         if kind == "cursor" and self._cursor_guard is None:
             self._guard_cursor()
-        agent = self.pa.start(spec, cwd, name=name, start_timeout=start_timeout)
+        try:
+            agent = self.pa.start(spec, cwd, name=name, start_timeout=start_timeout)
+        finally:
+            self.lab_pids.update(pid for pid, _ in owned(self.nonce))
         self.agents.append(agent)
         return agent
 
@@ -802,6 +886,8 @@ class AgentLab:
                         "the backup and restore of ~/.cursor")
         self.cursor_before = cursor_state()
         self.cursor_sockets_before = set(Path(tempfile.gettempdir()).glob(CURSOR_SOCKETS))
+        running = cursor_running_dir()
+        self.running_dir_existed = running is None or running.exists()
         guard = UserFileGuard(CURSOR_UNISOLATED)
         guard.__enter__()
         self._cursor_guard = guard  # registered only once the backup exists (review C5)
@@ -828,7 +914,8 @@ class AgentLab:
             except BaseException as e:  # noqa: BLE001 - keep tearing down, report afterwards
                 problems.append(f"{what} failed: {e!r}")
 
-        lab_pids = {pid for pid, _ in owned(self.nonce)}  # cursor names its markers after its pid
+        self.lab_pids.update(pid for pid, _ in owned(self.nonce))  # cursor names its markers after its pid
+        lab_pids = set(self.lab_pids)
         for agent in reversed(self.agents):
             stage(f"closing {agent.name}", agent.close)
         if self.owns_session:
@@ -862,6 +949,11 @@ class AgentLab:
             for marker in running.iterdir():
                 if marker.name.isdigit() and int(marker.name) in lab_pids:
                     marker.unlink()
+            if not self.running_dir_existed:  # created by this run: removed with it (D17)
+                try:
+                    running.rmdir()
+                except OSError:
+                    problems.append(f"{running} was created during the lab but holds markers of other processes")
 
         stage("cursor process markers", cursor_markers)
         for fn in reversed(self._cleanups):
@@ -880,7 +972,7 @@ class AgentLab:
                 problems.append(f"lab root {root} not removed")
 
             def check_escapes() -> None:
-                escaped = find_escapes(root, self.started_at)
+                escaped = find_escapes(root, self.started_at, home=self.home, tmp=self.tmpdir)
                 if escaped:
                     problems.append(f"entries outside the lab root carry its name: {escaped}")
 
@@ -893,6 +985,13 @@ class AgentLab:
                     problems.append(f"cursor's user state changed outside the allowed paths: {changed}")
 
         stage("checking ~/.cursor", check_cursor)
+
+        def check_history() -> None:
+            grown = history_growth(self.history_before, history_sentinels(self.home))
+            if grown:
+                problems.append(f"the library's preparation command line was added to the user's shell history: {grown}")
+
+        stage("checking the user's shell history", check_history)
 
         def check_sessions() -> None:
             after = session_names(self.real_herdr)

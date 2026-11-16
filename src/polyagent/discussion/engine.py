@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import threading
 import time
 import traceback
@@ -134,7 +135,12 @@ def _member_spec(spec: object, who: str) -> AgentSpec:
 
 
 def _error(e: BaseException) -> dict[str, str]:
-    return {"type": type(e).__name__, "message": str(e)[:MAX_ERROR_MESSAGE]}
+    """Type and full message; ``finish`` redacts first and truncates afterwards (review N3)."""
+    try:
+        message = str(e)
+    except Exception:  # an exception whose __str__ fails (review N2)
+        message = ""
+    return {"type": type(e).__name__, "message": message}
 
 
 class _End(Exception):
@@ -168,9 +174,34 @@ class _Asked:
 class Discussion:
     """A coordinator-led discussion between read-only agents (agent-discussion spec).
 
-    Configuration errors raise ``InvalidConfigError`` here; :meth:`run` raises ``InvalidConfigError``
-    or ``PolicyNotSupportedError`` before starting any agent and otherwise always returns a
-    :class:`DiscussionRecord` (D14)."""
+    Every member runs ``read_only``; ``full_auto`` is refused. Configuration errors raise
+    ``InvalidConfigError`` here; :meth:`run` raises ``InvalidConfigError`` or
+    ``PolicyNotSupportedError`` before starting any agent and otherwise always returns a
+    :class:`DiscussionRecord` (D14), also for failures and cancellation. A ``Discussion`` runs once.
+
+    Example::
+
+        from polyagent import AgentSpec, ClaudeProvider, Discussion, Participant, PolyAgent
+
+        provider = ClaudeProvider.compatible("https://llm.example.com", auth_token=TOKEN)
+        claude = AgentSpec(kind="claude", provider=provider)
+        d = Discussion(
+            PolyAgent(session="discussions"),
+            coordinator=claude,
+            participants=[
+                Participant("critic", "Finds risks and missing cases", claude),
+                Participant("builder", "Proposes a concrete design", AgentSpec(kind="copilot")),
+            ],
+            cwd="/srv/repo",
+            max_rounds=4,
+        )
+        print("reclaim with PolyAgent.cleanup(discussion_id=%r) if this process dies" % d.id)
+        record = d.run("Add a cache in front of the user API", on_event=lambda e: db.save(e.to_dict()))
+        if record.status == "completed":
+            print(record.summary["conclusion"])
+
+    ``cancel()`` may be called from another thread. Agents are closed when the run ends unless
+    ``keep_agents=True`` (agents are always closed when a member fails to start)."""
 
     def __init__(
         self,
@@ -246,6 +277,9 @@ class Discussion:
         self._cancel.set()
 
     def run(self, requirement: str, on_event: Callable[[Event], Any] | None = None) -> DiscussionRecord:
+        """Run the discussion to its end and return the record. ``on_event`` is called on this thread
+        only, with strictly increasing ``Event.seq``; an exception it raises ends the discussion with
+        ``callback_error`` (except for ``discussion_finished``, which only records the error)."""
         if on_event is not None and not callable(on_event):
             raise InvalidConfigError("on_event must be callable")
         requirement = self._check_requirement(requirement)
@@ -258,6 +292,7 @@ class Discussion:
         for name, spec in specs.items():  # defence in depth: members only ever run read_only (review C13)
             if spec.policy != READ_ONLY:
                 raise InvalidConfigError(f"{name}: discussion members always run read_only")
+        self._text.marker = secrets.token_hex(8)  # D13 "分隔标记", new for every run
         opening = self._text.opening(requirement, self._max_rounds, self._total_timeout, self._turn_timeout)
         first = opening + "\n" + self._text.reminder([PR.BRIEF], self._names(), None, None)
         if len(first.encode("utf-8")) > PR.INPUT_BUDGET_BYTES:
@@ -304,10 +339,10 @@ class _Run:
         self.callback = on_event
         self.cancel = d._cancel
         self.id = d.id
-        secrets: list[str] = []
+        values: list[str] = [d._text.marker]  # the separator marker is redacted like a credential (D13)
         for spec in specs.values():
-            secrets += spec.secret_values()
-        self.redact = Redactor(secrets)
+            values += spec.secret_values()
+        self.redact = Redactor(values)
         roles = {COORDINATOR: "coordinator", **{p.name: p.role for p in d._participants}}
         members = [
             Member(name=name, role=self.redact.text(roles[name]), kind=spec.kind, model=spec.model,
@@ -345,7 +380,7 @@ class _Run:
             except Exception as e:  # unclassified: a library defect, never raised out of run() (D13 "内部错误")
                 trace = "".join(traceback.format_exception(type(e), e, e.__traceback__))
                 log.error("discussion %s: internal error %s: %s\n%s", self.id, type(e).__name__,
-                          self.redact.text(PR.utf8_safe(str(e))), self.redact.text(PR.utf8_safe(trace)))
+                          self.redact.text(PR.utf8_safe(_error(e)["message"])), self.redact.text(PR.utf8_safe(trace)))
                 self.finish(Status.FAILED.value, EndReason.INTERNAL_ERROR.value, _error(e))
         finally:
             self.cleanup()  # also when a BaseException from the callback propagates (D14)
@@ -353,16 +388,22 @@ class _Run:
         callback, self.callback = self.callback, None
         if callback is not None:
             self.event_seq += 1
-            event = Event(self.event_seq, EventType.DISCUSSION_FINISHED.value, self.id, utc_now(),
-                          self.safe({"record": rec.to_dict()}))
+            try:
+                event = Event(self.event_seq, EventType.DISCUSSION_FINISHED.value, self.id, utc_now(),
+                              self.safe({"record": rec.to_dict()}))
+            except Exception as e:  # a library defect: the record is still returned (review N2)
+                log.error("discussion %s: could not build the discussion_finished event: %s: %s", self.id,
+                          type(e).__name__, self.redact.text(PR.utf8_safe(_error(e)["message"])))
+                return rec
             try:
                 callback(event)
             except Exception as e:  # the terminal state is final; only the error is recorded (D14)
                 err = _error(e)
+                err["message"] = self.safe(err["message"])[:MAX_CALLBACK_MESSAGE]
                 if rec.error is not None:
-                    err["message"] = (f"{err['message'][:MAX_CALLBACK_MESSAGE]} (the discussion had already ended "
-                                      f"with {rec.error['type']}: {rec.error['message']})")[:MAX_ERROR_MESSAGE]
-                rec.error = self.safe(err)
+                    err["message"] = (f"{err['message']} (the discussion had already ended "
+                                      f"with {rec.error['type']}: {rec.error['message']})")
+                rec.error = self.safe_error(err)
         return rec
 
     def drive(self) -> None:
@@ -382,9 +423,20 @@ class _Run:
             return
         rec.status = status
         rec.end_reason = reason
-        rec.error = self.safe(error) if error is not None else None
+        rec.error = self.safe_error(error) if error is not None else None
         if status != Status.COMPLETED.value:
             rec.summary = None
+
+    def forward(self, text: str) -> str:
+        """One agent's text on its way into another agent's input (D13 "成员之间转发的文本"):
+        normalised, control characters removed (so a split credential joins up again), redacted.
+        Truncation, where it applies, comes last (``fit_results``)."""
+        return self.redact.text(PR.clean(text))
+
+    def safe_error(self, error: dict[str, str]) -> dict[str, str]:
+        out = self.safe(error)
+        out["message"] = out["message"][:MAX_ERROR_MESSAGE]
+        return out
 
     def safe(self, value: Any) -> Any:
         """What may enter the record and events: redacted, lone surrogates replaced, a fresh copy."""
@@ -457,7 +509,7 @@ class _Run:
         if failure is not None:
             name, e = failure
             raise _End(Status.FAILED.value, EndReason.START_FAILED.value,
-                       {"type": type(e).__name__, "message": f"member {name!r} did not start: {e}"[:MAX_ERROR_MESSAGE]})
+                       {"type": type(e).__name__, "message": f"member {name!r} did not start: {_error(e)['message']}"})
 
     # ---- coordinator ----------------------------------------------------------------
 
@@ -484,7 +536,7 @@ class _Run:
                     raise _End(Status.FAILED.value, EndReason.COORDINATOR_FAILED.value,
                                {"type": type(ie).__name__,
                                 "message": f"the coordinator did not return to input after the total time ran out "
-                                           f"in the {phase.value} phase: {ie}"[:MAX_ERROR_MESSAGE]}) from None
+                                           f"in the {phase.value} phase: {_error(ie)['message']}"}) from None
                 return _BUDGET
             raise _End(Status.FAILED.value, EndReason.COORDINATOR_FAILED.value, _error(e)) from None
         except Exception as e:
@@ -533,7 +585,8 @@ class _Run:
             reply_text = PR.utf8_safe(reply.text)  # first step on any agent text (D13)
             value, err = PR.extract_action(reply_text)
             outcome = PR.Outcome(None, (err,)) if err else PR.check_action(
-                value, allowed, self.d._template, self.available(), self.d._names(), self.participant_prompt)
+                value, allowed, self.d._template, self.available(), self.d._names(), self.participant_prompt,
+                self.forward)
             if outcome.action is not None and outcome.action.kind == PR.BRIEF:
                 outcome = self.check_brief(outcome.action)
             if outcome.action is not None:
@@ -549,7 +602,7 @@ class _Run:
         """The brief goes into every participant's first prompt: control characters are removed now,
         and it must fit (with a question) into the first prompt of every available participant, so a
         bad brief is fed back in the brief phase instead of failing every later dispatch (review C4)."""
-        brief = PR.deep(PR.clean, action.data["brief"])
+        brief = PR.deep(self.forward, action.data["brief"])
         if not brief["goal"].strip():
             return PR.Outcome(None, ("$.brief.goal: must not be empty",))
         size = len(PR.brief_block(brief).encode("utf-8"))
@@ -607,7 +660,8 @@ class _Run:
             if results is None:
                 text = intro + footer
             else:
-                text = PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit)
+                text = PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit, text=self.d._text,
+                                   forward=self.forward)
             action = self.coordinator_action(Phase.DISPATCH, text, allowed)
             if action is _BUDGET:  # results already seen by the coordinator are not sent again
                 return EndReason.BUDGET_EXHAUSTED.value, results if self.budget_unsent else None
@@ -655,7 +709,7 @@ class _Run:
                          status=MessageStatus(asked.status), source=asked.source if ok else None,
                          started_at=asked.started_at, duration=asked.duration)
                 if asked.unavailable:
-                    self.mark_unavailable(name, f"{asked.status}: {asked.text}"[:MAX_ERROR_MESSAGE])
+                    self.mark_unavailable(name, self.redact.text(PR.utf8_safe(f"{asked.status}: {asked.text}"))[:MAX_ERROR_MESSAGE])
                 results.append(PR.RoundResult(name, asked.status, asked.text if ok else "", asked.unavailable))
         return results
 
@@ -663,13 +717,14 @@ class _Run:
         self.t_summary = _monotonic()
         request = self.d._text.summary_request(reason)
         footer = request + self.reminder([PR.SUMMARY])
-        text = footer if results is None else PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit)
+        text = footer if results is None else PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit, text=self.d._text,
+                                   forward=self.forward)
         try:
             action = self.coordinator_action(Phase.SUMMARY, text, [PR.SUMMARY])
         except _End as end:
             if end.reason == EndReason.COORDINATOR_FAILED.value and end.error is not None:
                 end.error["message"] = (f"{end.error['message']} (the summary phase was entered because of "
-                                        f"{reason})")[:MAX_ERROR_MESSAGE]
+                                        f"{reason})")
             raise
         if action is _INVALID:
             raise _End(Status.FAILED.value, EndReason.SUMMARY_INVALID.value,
@@ -700,22 +755,22 @@ class _Run:
             reply = agent.ask_reply(prompt, timeout, cancel=self.cancel)
             text, source = PR.utf8_safe(reply.text), reply.source
         except AgentTimeoutError as e:
-            status, text = MessageStatus.TIMEOUT.value, str(e)
+            status, text = MessageStatus.TIMEOUT.value, _error(e)["message"]
             if not self.cancel.is_set():
                 try:  # back to accepting input before the next dispatch (D13)
                     agent.interrupt()
                 except Exception as ie:
                     unavailable, text = True, f"{e}; interrupt failed: {ie}"
         except AgentBlockedError as e:
-            status, text = MessageStatus.BLOCKED.value, str(e)
+            status, text = MessageStatus.BLOCKED.value, _error(e)["message"]
         except AgentTurnAbortedError as e:
-            status, text = MessageStatus.ABORTED.value, str(e)
+            status, text = MessageStatus.ABORTED.value, _error(e)["message"]
         except AgentTurnError as e:
-            status, text = MessageStatus.ERROR.value, str(e)
+            status, text = MessageStatus.ERROR.value, _error(e)["message"]
         except AskCancelledError as e:
-            status, text = MessageStatus.CANCELLED.value, str(e)
+            status, text = MessageStatus.CANCELLED.value, _error(e)["message"]
         except AgentNotFoundError as e:
-            status, text, unavailable = MessageStatus.FAILED.value, str(e), True
+            status, text, unavailable = MessageStatus.FAILED.value, _error(e)["message"], True
         except Exception as e:
             status, text = MessageStatus.FAILED.value, f"{type(e).__name__}: {e}"
         end = _monotonic()
@@ -747,7 +802,7 @@ class _Run:
                 fn()
             except Exception as e:
                 log.warning("discussion %s: cleanup step %r failed: %s: %s", self.id, what, type(e).__name__,
-                            self.redact.text(PR.utf8_safe(str(e))))
+                            self.redact.text(PR.utf8_safe(_error(e)["message"])))
 
         def close_known() -> None:
             for member, agent in list(self.agents.items()):

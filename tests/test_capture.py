@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from fakeclient import append_jsonl, iso
 from polyagent import kinds as K
 from polyagent.capture import ClaudeLog, CodexLog, CopilotLog, Outcome, ScreenCapture, locate, prompt_digest
@@ -253,7 +255,7 @@ def test_reply_from_the_screen():
     """Scenario: 退回屏幕截取 (cursor sample)."""
     screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
     before = screen.split("  Do these steps in order")[0]  # the screen before the second prompt was sent
-    cap = ScreenCapture(CURSOR.footer)
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
     baseline = cap.baseline(before)
     assert baseline[-1].strip() == "The secret word is BANANA-42."
     prompt = ("Do these steps in order and report each result in one short line: 1) run the shell command "
@@ -267,13 +269,13 @@ def test_reply_from_the_screen():
 
 def test_first_prompt_on_a_fresh_screen():
     screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    cap = ScreenCapture(CURSOR.footer)
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
     text = cap.extract(screen, [], ["Read the file data.txt and tell me the secret word it contains."], count=0)
     assert text.startswith("I'll open data.txt") and "BANANA-42" in text
 
 
 def test_multiline_prompt_continuation_and_prefixes_are_skipped():
-    cap = ScreenCapture(K.adapter("claude").footer)
+    cap = ScreenCapture(K.adapter("claude").footer, K.adapter("claude").footer_block)
     screen = "old reply\n> Message from the user follows:\n  /help me\n\n⏺ Here is the answer.\n  Second line.\n" \
              "  Worked for 3s • 2:47 PM\n" + "─" * 40 + "\n❯ \n"
     text = cap.extract(screen, ["old reply"], [K.GUIDE_LINE_TEXT, "/help me"], count=1)
@@ -283,19 +285,19 @@ def test_multiline_prompt_continuation_and_prefixes_are_skipped():
 def test_no_echo_after_the_baseline_gives_none():
     """Scenario: 无法分离回复 — the agent raises ReplyNotFoundError from this (see test_ask)."""
     screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    cap = ScreenCapture(CURSOR.footer)
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
     assert cap.extract(screen, cap.baseline(screen), ["Read the file data.txt"], count=1) is None
     assert cap.extract(screen, ["a line that is not on screen"], ["Read the file data.txt"], count=1) is None
 
 
 def test_baseline_ignores_the_footer():
     screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    assert all("Add a follow-up" not in line for line in ScreenCapture(CURSOR.footer).baseline(screen))
+    assert all("Add a follow-up" not in line for line in ScreenCapture(CURSOR.footer, CURSOR.footer_block).baseline(screen))
 
 
 def test_codex_screen_footer():
     screen = (SCREENS / "codex/status-after-raw-slash-status.txt").read_text()
-    cap = ScreenCapture(K.adapter("codex").footer)
+    cap = ScreenCapture(K.adapter("codex").footer, K.adapter("codex").footer_block)
     text = cap.extract(screen, [], ["/status"], count=0)
     assert "OpenAI Codex" in text and "Ask Codex to do anything" not in text
 
@@ -345,8 +347,8 @@ def test_jsonl_resolve_and_truncation(tmp_path):
 def test_identical_questions_and_answers_on_screen():
     """Review C11: the baseline block also ends the new turn; the right occurrence is the last one
     that is followed by this prompt's echo."""
-    cap = ScreenCapture(CURSOR.footer)
-    foot = "→ Add a follow-up"
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
+    foot = "→ Add a follow-up\n  Auto Balance   Run Everything"
     head = ["Cursor Agent", "~/repo"]
     turn = ["> ping", "PONG"]
     one, two, three = ("\n".join(head + turn * n + [foot]) for n in (1, 2, 3))
@@ -360,15 +362,16 @@ def test_identical_questions_and_answers_on_screen():
     bare = "\n".join(turn + [foot])
     base = cap.baseline(bare)
     assert cap.extract("\n".join(turn * 2 + [foot]), base, ["ping"], count=cap.count(bare, base)) == "PONG"
-    assert cap.echo_seen("\n".join(turn * 2), base, ["ping"], count=cap.count(bare, base))
+    assert cap.echo_seen("\n".join(turn * 2 + [foot]), base, ["ping"], count=cap.count(bare, base))
+    assert not cap.echo_seen("\n".join(turn * 2), base, ["ping"], count=cap.count(bare, base))  # no input area
     assert not cap.echo_seen(bare, base, ["ping"], count=cap.count(bare, base))
 
 
 def test_identical_turns_before_an_undelivered_prompt_are_not_its_reply():
     """Review N1: three identical ping/PONG turns on screen, the fourth prompt never arrives: no echo, no
     reply. Delivered, the fourth turn's reply is found."""
-    cap = ScreenCapture(CURSOR.footer)
-    foot = "→ Add a follow-up"
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
+    foot = "→ Add a follow-up\n  Auto Balance   Run Everything"
     turn = ["> ping", "PONG"]
     three = "\n".join(["Cursor Agent"] + turn * 3 + [foot])
     four = "\n".join(["Cursor Agent"] + turn * 3 + ["> ping", "PONG 4"] + [foot])
@@ -384,7 +387,7 @@ def test_identical_turns_before_an_undelivered_prompt_are_not_its_reply():
 def test_a_scrolled_screen_never_points_before_the_pre_submit_position():
     """Review N1: earlier occurrences scrolled out of a later read: the n-th occurrence is then at or after
     the pre-submit position, so the result is "not found" or the right reply, never an old one."""
-    cap = ScreenCapture(CURSOR.footer)
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
     turn = ["> ping", "PONG"]
     before = turn * 5
     base = cap.baseline("\n".join(before))
@@ -397,19 +400,19 @@ def test_a_scrolled_screen_never_points_before_the_pre_submit_position():
 
 def test_one_word_reply_that_occurs_in_the_prompt_is_kept():
     """Review S5 (phase 4 spot check): continuation lines are matched in order, not as substrings."""
-    cap = ScreenCapture(CURSOR.footer)
-    screen = "Cursor Agent\n> Reply with exactly one word: PONG\n\nPONG\n→ Add a follow-up"
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
+    screen = "Cursor Agent\n> Reply with exactly one word: PONG\n\nPONG\n→ Add a follow-up\n  Auto Balance   Run Everything"
     assert cap.extract(screen, ["Cursor Agent"], ["Reply with exactly one word: PONG"], count=1) == "PONG"
     prompt = "Reply with exactly one word, nothing else, no punctuation at all; the word is PONG"
     wrapped = ("Cursor Agent\n> Reply with exactly one word, nothing else, no punctuation at all;\n"
-               "the word is PONG\n\nPONG\n→ Add a follow-up")
+               "the word is PONG\n\nPONG\n→ Add a follow-up\n  Auto Balance   Run Everything")
     assert cap.extract(wrapped, ["Cursor Agent"], [prompt], count=1) == "PONG"
 
 
 def test_cursor_first_prompt_on_a_real_screen():
     """Phase 5: before the first prompt cursor's input line is `→ Plan, search, build anything`; it is a
     footer marker too, otherwise the baseline is taken from lines that disappear with the first prompt."""
-    cap = ScreenCapture(CURSOR.footer)
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
     before = (SCREENS / "cursor/first-prompt-before.txt").read_text()
     after = (SCREENS / "cursor/first-prompt-pong-after.txt").read_text()
     base = cap.baseline(before)
@@ -446,7 +449,7 @@ def test_claude_drops_format_characters_from_the_recorded_prompt(tmp_path):
 def test_cursor_input_line_showing_the_previous_prompt_is_a_footer():
     """Phase 5 (real cursor run): right after a turn the input line can read `→ <previous prompt>`; the
     baseline must not be taken from it, or the next reply is never found."""
-    cap = ScreenCapture(CURSOR.footer)
+    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
     before = ("  Cursor Agent\n  > Reply with exactly one word: PONG\n\n  PONG\n\n"
               "  → Reply with exactly one word: PONG\n\n  Auto Balance   Run Everything\n  /tmp/pa-work\n")
     after = ("  Cursor Agent\n  > Reply with exactly one word: PONG\n\n  PONG\n\n  > Read both files\n\n"
@@ -455,3 +458,80 @@ def test_cursor_input_line_showing_the_previous_prompt_is_a_footer():
     assert base and all("→" not in line for line in base)
     assert cap.extract(after, base, ["Read both files"], count=cap.count(before, base)) == \
         "- **alpha.txt**: 41\n- **beta.txt**: 17"
+
+
+# ---- task 13.21: content area and footer (D12 "内容区和页脚") ------------------------------------------
+
+CURSOR_CAP = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
+CODEX = K.adapter("codex")
+CODEX_CAP = ScreenCapture(CODEX.footer, CODEX.footer_block)
+STATUS = "  Auto Balance   Run Everything"
+
+
+@pytest.mark.parametrize("input_line", ["→ Plan, search, build anything", "→ Add a follow-up",
+                                        "→ Reply with exactly one word: PONG"])
+def test_cursor_three_input_line_forms(input_line):
+    before = f"Cursor Agent\n  old answer\n\n  {input_line}\n\n{STATUS}\n  /tmp/pa-work\n"
+    assert CURSOR_CAP.recognized(before) and CURSOR_CAP.baseline(before) == ["Cursor Agent", "  old answer"]
+    after = before.replace(f"  {input_line}", f"  What is it?\n\n  It is 42.\n\n  {input_line}")
+    base = CURSOR_CAP.baseline(before)
+    assert CURSOR_CAP.extract(after, base, ["What is it?"], count=CURSOR_CAP.count(before, base)) == "It is 42."
+
+
+def test_cursor_reply_lines_starting_with_the_input_prefix_are_kept():
+    """Scenario: 回复正文里有与输入行相同开头的行 (the known defect before 13.21)."""
+    before = f"Cursor Agent\n  → Add a follow-up\n{STATUS}\n"
+    after = (f"Cursor Agent\n  List the steps\n  Steps:\n  → first step\n  → second step\n  done.\n"
+             f"  → Add a follow-up\n{STATUS}\n")
+    base = CURSOR_CAP.baseline(before)
+    text = CURSOR_CAP.extract(after, base, ["List the steps"], count=CURSOR_CAP.count(before, base))
+    assert text == "Steps:\n→ first step\n→ second step\ndone."
+
+
+def test_cursor_arrow_line_right_above_the_footer_block_stays_in_the_reply():
+    screen = f"Cursor Agent\n  ask\n  → the last line of the reply\n  → Add a follow-up\n{STATUS}\n  /tmp/x\n"
+    assert CURSOR_CAP.extract(screen, [], ["ask"], count=0) == "→ the last line of the reply"
+
+
+@pytest.mark.parametrize("tail", [
+    "  → Add a follow-up\n  Auto Balance\n  /tmp/x\n",  # an arrow line near the end, no status marker
+    "  → Add a follow-up\n  a\n  b\n  c\n  d\n" + STATUS + "\n",  # five non-blank lines after it
+    "  no input line at all\n" + STATUS + "\n",
+])
+def test_cursor_screen_without_a_recognized_footer_block(tail):
+    screen = "Cursor Agent\n  ask\n  It is 42.\n" + tail
+    assert not CURSOR_CAP.recognized(screen)
+    assert CURSOR_CAP.extract(screen, [], ["ask"], count=0) is None
+    assert not CURSOR_CAP.echo_seen(screen, [], ["ask"], count=0)
+
+
+def test_codex_echo_in_the_transcript_carries_the_input_prefix():
+    """Phase-2 real codex screen: submitted prompts appear as `› <prompt>` in the transcript."""
+    screen = ("  >_ OpenAI Codex (v0.167.0)\n\n› Reply with exactly PONG.\n\n• PONG\n\n"
+              "› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n")
+    assert CODEX_CAP.extract(screen, [], ["Reply with exactly PONG."], count=0) == "PONG"
+
+
+def test_codex_prompt_left_in_the_input_box_is_not_an_echo():
+    """Scenario: prompt 留在输入框里没有提交 — the status line below it is never returned."""
+    before = "  >_ OpenAI Codex (v0.167.0)\n\n  old reply\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo\n"
+    stuck = "  >_ OpenAI Codex (v0.167.0)\n\n  old reply\n\n› What is the answer?\n\n  gpt default · /tmp/repo\n"
+    base = CODEX_CAP.baseline(before)
+    count = CODEX_CAP.count(before, base)
+    assert not CODEX_CAP.echo_seen(stuck, base, ["What is the answer?"], count=count)
+    assert CODEX_CAP.extract(stuck, base, ["What is the answer?"], count=count) is None
+
+
+def test_cursor_prompt_left_in_the_input_box_is_not_an_echo():
+    before = f"Cursor Agent\n  old\n  → Add a follow-up\n{STATUS}\n"
+    stuck = f"Cursor Agent\n  old\n  → What is the answer?\n{STATUS}\n"
+    base = CURSOR_CAP.baseline(before)
+    assert CURSOR_CAP.extract(stuck, base, ["What is the answer?"], count=CURSOR_CAP.count(before, base)) is None
+
+
+@pytest.mark.parametrize("rel", ["cursor/first-prompt-before.txt", "cursor/first-prompt-pong-after.txt",
+                                 "cursor/websearch-rejected-after-esc.txt", "codex/status-after-raw-slash-status.txt"])
+def test_samples_show_a_recognized_input_area(rel):
+    kind = rel.split("/")[0]
+    a = K.adapter(kind)
+    assert ScreenCapture(a.footer, a.footer_block).recognized((SCREENS / rel).read_text())

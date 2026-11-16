@@ -195,8 +195,11 @@ class HerdrClient:
 
     # ---- workspaces / panes --------------------------------------------
 
-    def workspace_create(self, cwd: str, label: str) -> dict[str, Any]:
-        return self.call("workspace", "create", "--cwd", cwd, "--no-focus", "--label", label)
+    def workspace_create(self, cwd: str, label: str, env: dict[str, str] | None = None) -> dict[str, Any]:
+        """``env``: variables for the pane's shell (``--env K=V``, task 13.19). They appear in argv: never
+        pass credentials here (those go through the 0600 preparation script, D6)."""
+        extra = [a for k, v in (env or {}).items() for a in ("--env", f"{k}={v}")]
+        return self.call("workspace", "create", "--cwd", cwd, "--no-focus", "--label", label, *extra)
 
     def workspace_get(self, workspace_id: str) -> dict[str, Any]:
         args = ("workspace", "get", workspace_id)

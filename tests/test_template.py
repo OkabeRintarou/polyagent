@@ -273,4 +273,4 @@ def test_c9_validate_reports_instead_of_raising(kwargs, needle):
 
 def test_c9_fingerprint_of_invalid_unicode_is_a_config_error():
     with pytest.raises(InvalidConfigError):
-        SummaryTemplate("t", 1, None, "a\ud800", {"type": "object"}).fingerprint
+        _ = SummaryTemplate("t", 1, None, "a\ud800", {"type": "object"}).fingerprint

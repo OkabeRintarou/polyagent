@@ -217,3 +217,16 @@ def test_claude_and_copilot_variable_families():
     assert K.adapter("claude").config_env_prefixes == ("CLAUDE_",)
     assert {"USE_BUILTIN_RIPGREP", "USE_TGREP"} <= set(K.adapter("copilot").config_env_names)
     assert K.is_config_env("CLAUDE_FOO") and K.is_config_env("USE_TGREP")
+
+
+def test_claude_lists_after_task_13_2():
+    """Task 13.2 (local stub): Skill can run in the background; the plan-mode pair waits for the user;
+    DesignSync writes remote state. Denied under the policies that need it."""
+    def denied(policy):
+        return _list(args("claude", policy), "--disallowedTools")
+    for policy in ("full_auto", "read_only"):
+        d = denied(policy)
+        assert {"Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"} <= set(d)
+    assert "DesignSync" in denied("read_only") and "DesignSync" not in denied("full_auto")
+    for p in ("read_only", "full_auto"):
+        assert K.adapter("claude").capability(K.turn_attribution(p)).state == K.VERIFIED

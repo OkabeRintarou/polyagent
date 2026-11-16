@@ -250,7 +250,10 @@ def test_explicit_passthrough(fake, monkeypatch):
 @pytest.mark.parametrize(
     "name",
     ["COPILOT_ALLOW_ALL", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "CURSOR_API_KEY",
-     "BASH_ENV", "ENV", "NODE_OPTIONS", "LD_PRELOAD", "HERDR_SOCKET_PATH", "1BAD", "A-B"],
+     "BASH_ENV", "ENV", "NODE_OPTIONS", "LD_PRELOAD", "HERDR_SOCKET_PATH", "1BAD", "A-B",
+     # task 13.11: what every pane shell would run or expand, node module resolution, account/host choice
+     "PROMPT_COMMAND", "PS0", "PS1", "PS4", "SHELLOPTS", "BASHOPTS", "NODE_PATH", "GH_HOST",
+     "ENABLE_TOOL_SEARCH"],
 )
 def test_passthrough_of_permission_variables_rejected(fake, name):
     """Scenario: 透传权限开关变量."""

@@ -90,6 +90,21 @@ class PromptGuard:
     multiline: bool
 
 
+# ---- screen footer (D12 "内容区和页脚") ----------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FooterBlock:
+    """A bottom footer block: it starts at the last line of the screen read matching ``input_line``
+    (the input line), is followed by at most ``max_after`` non-blank lines, and, when ``status`` is
+    not empty, one of those lines matches a status marker. A screen without such a block is not in a
+    recognizable input state."""
+
+    input_line: re.Pattern[str]
+    status: tuple[re.Pattern[str], ...] = ()
+    max_after: int = 4
+
+
 # ---- read_only extra-argument whitelist (D8) ------------------------------------------
 
 
@@ -108,7 +123,10 @@ def _opt(option: str, value: str) -> SafeOption:
 # ---- adapter -----------------------------------------------------------------------
 
 GENERIC_FORBIDDEN_ENV_NAMES = frozenset(
-    {"HOME", "PATH", "SHELL", "BASH_ENV", "ENV", "NODE_OPTIONS", "XDG_CONFIG_HOME"}
+    {"HOME", "PATH", "SHELL", "BASH_ENV", "ENV", "NODE_OPTIONS", "XDG_CONFIG_HOME",
+     # Task 13.11: the program the CLI runs to edit a file (copilot's environment help; claude's editor
+     # shortcut), and module resolution of the node-based CLIs (it changes the code they run).
+     "EDITOR", "VISUAL", "NODE_PATH"}
 )
 GENERIC_FORBIDDEN_ENV_PREFIXES = ("LD_", "HERDR_")
 
@@ -146,8 +164,10 @@ class KindAdapter:
     deny_key: str | None
     interrupt_key: str
     log_binding: str | None  # "session_id" | "rollout_fd" | None (D12)
-    # Screen-capture footer markers (D12): the first matching line ends the reply region.
+    # Screen-capture footer (D12): line markers (the first matching line after the baseline ends the
+    # content), or a bottom footer block, which replaces the markers when given.
     footer: tuple[re.Pattern[str], ...] = ()
+    footer_block: FooterBlock | None = None
     trust_by_flag: bool = False  # cursor: `--trust` instead of a dialog (persisted, D9)
     secret_env_flag: str | None = None  # hides injected variable names from tools under read_only
     notes: tuple[str, ...] = field(default=())
@@ -188,8 +208,17 @@ CLAUDE_ASYNC_TOOLS = (
     "Agent", "ListAgents", "Workflow", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Monitor",
     "SendMessage", "TaskCreate", "TaskGet", "TaskList", "TaskUpdate", "TaskStop", "EnterWorktree", "ExitWorktree",
     "PushNotification",
+    # Task 13.2 (claude 2.1.322, local stub): offered under full_auto; "a skill that runs in the background
+    # returns only the agent's name — its result arrives later".
+    "Skill",
 )
-CLAUDE_READ_ONLY_DENY = ("Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "AskUserQuestion")
+# Forms that wait for the user (D8 "提问表单"), both policies. Task 13.2: the plan-mode pair is loadable through
+# claude's deferred-tool search in both policies, and ExitPlanMode waits for the user's approval.
+CLAUDE_FORM_TOOLS = ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode")
+# DesignSync (task 13.2): reads and updates the user's claude.ai design projects over the network; loadable
+# through the deferred-tool search unless denied.
+CLAUDE_READ_ONLY_DENY = ("Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "DesignSync",
+                         *CLAUDE_FORM_TOOLS)
 CLAUDE_READ_ONLY_ALLOW = ("Read", "Grep", "Glob")
 # copilot tools that start background work reported in later, prompt-less turns (task 13.1).
 # `bash` with mode=async has the same effect but cannot be excluded on its own (phase-3 finding P3-1).
@@ -222,7 +251,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             ("--allowedTools", CLAUDE_READ_ONLY_ALLOW),
             ("--disallowedTools", CLAUDE_READ_ONLY_DENY + CLAUDE_ASYNC_TOOLS),
         ),
-        full_auto_lists=(("--disallowedTools", ("AskUserQuestion",) + CLAUDE_ASYNC_TOOLS),),
+        full_auto_lists=(("--disallowedTools", CLAUDE_FORM_TOOLS + CLAUDE_ASYNC_TOOLS),),
         session_id_flag="--session-id",
         capabilities={
             READ_ONLY: Capability(VERIFIED, note="needs an explicit non-official provider (--restricted drops settings login)"),
@@ -230,14 +259,19 @@ ADAPTERS: dict[str, KindAdapter] = {
             LOG_ADAPTER: Capability(VERIFIED),
             INTERRUPT_KEY: Capability(VERIFIED),
             SCREEN_CAPTURE: Capability(UNVERIFIED, task="13.16", note="footer markers inferred from the UI, no screen samples"),
-            TURN_ATTRIBUTION_READ_ONLY: Capability(UNVERIFIED, task="13.2", note="async tool list in use; residual risk documented"),
-            TURN_ATTRIBUTION_FULL_AUTO: Capability(UNVERIFIED, task="13.2", note="async tool list in use; residual risk documented"),
+            # Task 13.2 (local stub): the denied tools are neither offered nor found by the deferred-tool search.
+            TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="async tools denied, also for the deferred-tool search"),
+            TURN_ATTRIBUTION_FULL_AUTO: Capability(VERIFIED, note="async tools denied, also for the deferred-tool search"),
             IGNORE_USER_CONFIG: Capability(VERIFIED, note="--restricted"),
         },
         config_dir_var="CLAUDE_CONFIG_DIR",
         default_config_dir=".claude",
-        config_env_prefixes=("CLAUDE_",),  # whole prefix until task 13.11 reviews it
-        config_env_names=(),
+        # Task 13.11 (claude's environment-variable documentation): the whole CLAUDE_ prefix stays (it holds
+        # restricted/safe mode, sandbox and permission switches), plus unprefixed names that change the
+        # executable, the visible tools, where content is sent, or the installed code.
+        config_env_prefixes=("CLAUDE_",),
+        config_env_names=("USE_BUILTIN_RIPGREP", "ENABLE_TOOL_SEARCH", "ENABLE_CLAUDEAI_MCP_SERVERS",
+                          "BETA_TRACING_ENDPOINT", "ENABLE_BETA_TRACING_DETAILED", "FORCE_AUTOUPDATE_PLUGINS"),
         always_forbidden_env_prefixes=(),
         permission_env_vars=(),
         prestart_env={},
@@ -296,7 +330,10 @@ ADAPTERS: dict[str, KindAdapter] = {
         config_dir_var="COPILOT_HOME",
         default_config_dir=".copilot",
         config_env_prefixes=("COPILOT_",),
-        config_env_names=("USE_BUILTIN_RIPGREP", "USE_TGREP"),  # switch the search programs (copilot help environment)
+        # `copilot help environment`: the search programs, and (task 13.11) the GitHub host it authenticates
+        # against. GH_TOKEN/GITHUB_TOKEN stay allowed: they are the ordinary way to give copilot a credential
+        # (hidden from its tools under read_only, D8); phase-7 finding P7-6.
+        config_env_names=("USE_BUILTIN_RIPGREP", "USE_TGREP", "GH_HOST"),
         always_forbidden_env_prefixes=(),
         permission_env_vars=("COPILOT_ALLOW_ALL", "COPILOT_ASSISTED_APPROVAL"),
         prestart_env={},
@@ -366,7 +403,9 @@ ADAPTERS: dict[str, KindAdapter] = {
         deny_key=None,
         interrupt_key="esc",
         log_binding="rollout_fd",
-        footer=(re.compile(r"^\s*› "), re.compile(r"^\s*›\s*$")),
+        # codex shows submitted prompts in the transcript as `› <prompt>` too (phase-2 screen, phase-7
+        # finding), so its input line is the *last* `›` line: a bottom block without a status marker.
+        footer_block=FooterBlock(re.compile(r"^\s*›(?: |\s*$)")),
     ),
     "cursor": KindAdapter(
         kind="cursor",
@@ -415,7 +454,10 @@ ADAPTERS: dict[str, KindAdapter] = {
         # The input line starts with "→ ": "→ Plan, search, build anything" before the first prompt,
         # "→ Add a follow-up" after a turn, and for a moment after a turn the previous prompt itself
         # ("→ <prompt>", phase-5 run); all of them end the reply region.
-        footer=(re.compile(r"^\s*→ "), re.compile(r"\(shift\+tab to cycle\)\s*$")),
+        # Input line: `→ Plan, search, build anything`, `→ Add a follow-up` or, briefly, `→ <last prompt>`;
+        # status line: `Run Everything` (full_auto) or `(shift+tab to cycle)` (ask mode) at the end.
+        footer_block=FooterBlock(re.compile(r"^\s*→ "),
+                                 (re.compile(r"Run Everything\s*$"), re.compile(r"\(shift\+tab to cycle\)\s*$"))),
     ),
 }
 

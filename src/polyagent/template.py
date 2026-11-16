@@ -230,6 +230,7 @@ class SummaryTemplate:
             pass
 
     def validate(self) -> list[str]:
+        """Every problem of this template (an empty list when it can be used); never raises."""
         problems = []
         if not isinstance(self.name, str) or not self.name.strip():
             problems.append("name must be a non-empty string")
@@ -241,6 +242,8 @@ class SummaryTemplate:
             problems.append(f"version must be a positive integer, got {self.version!r}")
         if self.description is not None and not isinstance(self.description, str):
             problems.append("description must be a string or None")
+        elif isinstance(self.description, str) and _SURROGATE_RE.search(self.description):
+            problems.append("description is not valid Unicode text (lone surrogate)")  # review N4
         if not isinstance(self.instructions, str):
             problems.append("instructions must be a string")
         elif _CONTROL_RE.search(self.instructions.replace("\r\n", "\n")):
@@ -278,6 +281,7 @@ class SummaryTemplate:
         return hashlib.sha256(data).hexdigest()
 
     def to_dict(self) -> dict[str, Any]:
+        """JSON-native form, with the ``fingerprint`` (checked again by :meth:`from_dict`)."""
         return {
             "name": self.name,
             "version": self.version,

@@ -6,6 +6,7 @@ of ``AgentTimeoutError``, so any handle of the agent (also in another process) c
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -37,7 +38,7 @@ from .errors import (
 log = logging.getLogger("polyagent")
 
 POLL_INTERVAL = 0.25
-CONFIRM_LIMIT = 30.0  # delivery confirmation window (D11)
+CONFIRM_LIMIT = 30.0  # delivery confirmation window (D11); also the life of a submission record
 SETTLE_GRACE = 15.0  # herdr settled but the log has no end marker yet (D12)
 UNKNOWN_WAIT = 10.0  # `unknown` status without a log: wait this long for idle/done (D11)
 INTERRUPT_WAIT = 15.0
@@ -57,6 +58,9 @@ KEYS = {
 
 @dataclass(frozen=True)
 class Reply:
+    """A reply: its ``text``, where it came from (``"session_log"`` or ``"screen"``) and ``duration``
+    in seconds."""
+
     text: str
     source: str  # "session_log" | "screen"
     duration: float
@@ -173,6 +177,7 @@ class Agent:
         return state
 
     def read(self, source: str = "recent-unwrapped", lines: int | None = None) -> str:
+        """The agent's terminal text as herdr shows it (``visible``, ``recent``, ``recent-unwrapped``)."""
         self._check_open()
         return self._call(self._h.agent_read, self.name, source, lines)
 
@@ -189,6 +194,7 @@ class Agent:
         """Close the agent's workspace if it still carries this agent's marker. Takes no lock (D11):
         an ask in progress on this handle then fails with ``AgentNotFoundError``. Idempotent."""
         self._closed.set()
+        self._drop_submission()
         try:
             ws = self._h.workspace_get(self.workspace_id)
         except HerdrError as e:
@@ -276,9 +282,19 @@ class Agent:
     # ---- ask --------------------------------------------------------------------
 
     def ask(self, text: str, timeout: float, cancel: threading.Event | None = None) -> str:
+        """Submit ``text`` as one message and return the reply text (see :meth:`ask_reply`)."""
         return self.ask_reply(text, timeout, cancel).text
 
     def ask_reply(self, text: str, timeout: float, cancel: threading.Event | None = None) -> Reply:
+        """Submit ``text`` and wait for this prompt's own reply, at most ``timeout`` seconds (a finite
+        positive number; 30 s or more is advised). Asks to the same agent are serialised across threads,
+        handles and processes. ``Reply.source`` is ``"session_log"`` or ``"screen"``.
+
+        Raises ``AgentTimeoutError`` (with ``pending`` for :meth:`wait_reply`), ``AgentBusyError``
+        (nothing was submitted), ``AgentBlockedError`` (a dialog; :meth:`dismiss` recovers),
+        ``AgentTurnError``, ``AgentTurnAbortedError``, ``ReplyNotFoundError``,
+        ``PromptNotDeliveredError``, ``AskCancelledError`` or ``InvalidPromptError``. Setting
+        ``cancel`` before the prompt is submitted sends nothing and leaves an earlier turn alone."""
         started = time.monotonic()
         deadline = started + _check_timeout(timeout)
         sent = sanitize(self._adapter, text)
@@ -362,7 +378,7 @@ class Agent:
             raise
 
     def _screen(self) -> ScreenCapture:
-        return ScreenCapture(self._adapter.footer)
+        return ScreenCapture(self._adapter.footer, self._adapter.footer_block)
 
     def _screen_verified(self) -> bool:
         """Screen capture is only used where screen samples back its rules (D12: cursor, codex)."""
@@ -388,6 +404,80 @@ class Agent:
                 raise AgentNotFoundError(f"agent {self.name} no longer exists") from None
             return ""
 
+    # -- submission record (D11, kinds whose herdr status is not trusted)
+    def _submission_file(self) -> Path:
+        return locks.submission_path(self._h.session, self.name)
+
+    def _write_submission(self, digest: str, mark: int) -> dict[str, Any]:
+        """Written before ``agent prompt`` while holding the ask lock: the prompt's digest, the log mark
+        before submission and the wall-clock time; never the prompt text. 0600, replaced atomically."""
+        record = {"v": 1, "digest": digest, "mark": mark, "at": time.time()}
+        path = self._submission_file()
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, json.dumps(record).encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+        return record
+
+    def _read_submission(self) -> dict[str, Any] | None:
+        try:
+            raw = self._submission_file().read_bytes()
+        except (OSError, InvalidConfigError):
+            return None
+        try:
+            rec = json.loads(raw)
+            ok = (isinstance(rec, dict) and isinstance(rec.get("digest"), str)
+                  and type(rec.get("mark")) is int and rec["mark"] >= 0
+                  and type(rec.get("at")) in (int, float) and math.isfinite(rec["at"]))
+        except ValueError:
+            ok = False
+        if not ok:  # unusable: treated as absent and removed
+            self._drop_submission()
+            return None
+        return rec
+
+    def _drop_submission(self, only: dict[str, Any] | None = None) -> None:
+        """Remove the record; with ``only``, just when it is still that record (another ask may have
+        written a newer one)."""
+        try:
+            path = self._submission_file()
+            if only is not None:
+                current = json.loads(path.read_bytes())
+                if current.get("digest") != only["digest"] or current.get("at") != only["at"]:
+                    return
+            path.unlink()
+        except (OSError, ValueError, InvalidConfigError, AttributeError):
+            pass
+
+    def _wait_submission(self, logsrc: LogAdapter, deadline: float, stop: _Stop) -> None:
+        """D11: an earlier submission whose user message is not in the log yet counts as ``working``
+        for up to ``CONFIRM_LIMIT`` seconds; once it appears, its turn is waited for as usual."""
+        first_seen = None
+        while True:
+            rec = self._read_submission()
+            if rec is None:
+                return
+            if first_seen is None:
+                first_seen = time.monotonic()
+            age = time.time() - rec["at"]
+            if age < 0:  # submitted "in the future" (the clock was set back): taken as just submitted
+                age = time.monotonic() - first_seen
+            if age >= CONFIRM_LIMIT:  # that prompt never arrived
+                self._drop_submission(rec)
+                return
+            if logsrc.judge(rec["mark"], rec["digest"]).outcome is not Outcome.NOT_SEEN:
+                self._drop_submission(rec)
+                self._wait_log_idle(logsrc, deadline, stop)
+                return
+            self._raise_if_stopped(stop)
+            if time.monotonic() >= deadline:
+                raise AgentBusyError(f"the previous prompt to agent {self.name} has not reached its session log "
+                                     "yet; nothing was submitted")
+            time.sleep(POLL_INTERVAL)
+
     # -- step 3: pre-check
     def _precheck(self, deadline: float, stop: _Stop, denials: list[int]) -> tuple[_Source, dict[str, Any]]:
         logsrc = self._bind_log()
@@ -403,6 +493,7 @@ class Agent:
             waited = False
             if not self._adapter.status_trusted:
                 self._wait_log_idle(logsrc, deadline, stop)  # type: ignore[arg-type]
+                self._wait_submission(logsrc, deadline, stop)  # type: ignore[arg-type]
             elif state == "working":
                 self._wait_settled(deadline, stop, ())
                 waited = True
@@ -429,6 +520,9 @@ class Agent:
         if logsrc is None or not logsrc.exists():
             capture = self._screen()
             screen = self._guard(self._h.agent_read, stop, self.name, "recent-unwrapped", SCREEN_LINES * 4)
+            if not capture.recognized(screen):  # D12: never submit into a screen whose input area is unknown
+                raise AgentBusyError(f"the screen of agent {self.name} is not in a recognizable input state; "
+                                     "nothing was submitted")
             baseline = capture.baseline(screen)
             count = capture.count(screen, baseline)
         return _Source(log=logsrc, mark=logsrc.mark() if logsrc else 0, baseline=baseline, count=count), info
@@ -471,11 +565,15 @@ class Agent:
                 if trusted:
                     self._guard(self._h.agent_prompt, stop, self.name, sent, remaining, cancel=stop)
                 else:  # no --wait, no --timeout; delivery by the log only (D11)
+                    record = self._write_submission(digest, src.mark)
                     self._guard(self._h.agent_prompt, stop, self.name, sent, wait=False, cancel=stop)
                     self._confirm(src, digest, sent, before, deadline, stop, log_only=True)
+                    self._drop_submission(record)
                 return
             except HerdrError as e:
                 if e.code == H.AGENT_BLOCKED:  # herdr sent nothing: handle the dialog, then submit (C3, C8)
+                    if not trusted:
+                        self._drop_submission(record)
                     stop.submitted = False
                     self._on_blocked(denials, stop)
                     info = self._guard(self._h.agent_get, stop, self.name)

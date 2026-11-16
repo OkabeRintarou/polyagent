@@ -100,7 +100,10 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
              # alias or re-exports a variable did exactly that in a real pane (phase-5 finding P5-3).
              # (The DEBUG trap is cleared on the command line that sources this file: bash restores it
              # after `.` when the sourced file changes it.)
-             f"{c} unset PROMPT_COMMAND 2>/dev/null; PS0="]
+             f"{c} unset PROMPT_COMMAND 2>/dev/null; PS0=",
+             # The pane's shell would write the command lines herdr typed (this one and `agent start`)
+             # to the user's history file when it exits (D6 "shell 历史"). Not re-checked.
+             f"{c} unset HISTFILE 2>/dev/null"]
     ro = spec.policy == "read_only"
     if ro:
         exe = shlex.quote(adapter.executable)

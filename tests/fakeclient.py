@@ -43,6 +43,7 @@ class FakeClient:
     explain: dict[str, Any] = field(default_factory=lambda: {"explanation": "agent: claude\nstate: working\n"
                                                                             "evidence: \"screen text\""})
     lock: threading.Lock = field(default_factory=threading.Lock)
+    workspace_env: list[dict[str, str]] = field(default_factory=list)
     _n: int = 0
 
     # ---- recording --------------------------------------------------------------
@@ -57,8 +58,9 @@ class FakeClient:
         return [a for m, a in self.calls if m == method]
 
     # ---- workspaces --------------------------------------------------------------
-    def workspace_create(self, cwd: str, label: str) -> dict[str, Any]:
+    def workspace_create(self, cwd: str, label: str, env: dict[str, str] | None = None) -> dict[str, Any]:
         self._rec("workspace_create", cwd, label)
+        self.workspace_env.append(dict(env or {}))
         with self.lock:  # PolyAgent.start may run on several threads at once
             self._n += 1
             wid = f"w{self._n}"
@@ -128,9 +130,12 @@ class FakeClient:
         self._rec("agent_list")
         return [dict(a) for a in self.agents.values()]
 
-    def add_agent(self, name: str, wid: str, status: str = "idle", cwd: str = "/tmp/x") -> None:
-        self.agents[name] = {"name": name, "workspace_id": wid, "pane_id": f"{wid}:p1", "agent_status": status,
-                             "state_change_seq": 1, "cwd": cwd}
+    def add_agent(self, name: str, wid: str, status: str = "idle", cwd: str = "/tmp/x", kind: str = "claude") -> None:
+        # Fields as herdr 0.9.5 returns them for a named agent (tests/fixtures/herdr/README.md, task 13.13);
+        # without herdr's own integration there is no `agent_session` key at all.
+        self.agents[name] = {"name": name, "agent": kind, "workspace_id": wid, "pane_id": f"{wid}:p1",
+                             "agent_status": status, "state_change_seq": 1, "cwd": cwd, "foreground_cwd": cwd,
+                             "interactive_ready": True, "revision": 1, "terminal_id": f"{wid}:t1"}
 
     def agent_get(self, name: str) -> dict[str, Any]:
         self._rec("agent_get", name)

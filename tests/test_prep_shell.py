@@ -265,3 +265,47 @@ def test_hook_that_re_exports_backend_variables_is_removed(tmp_path):
         env={"PATH": f"{fake_bin(tmp_path)}:/usr/bin:/bin", **INHERITED}, capture_output=True, text=True, timeout=30)
     assert "__pa_env_ok_2" in probe.stdout, probe.stdout + probe.stderr
     assert "URL=[https://llm.example.com] BEDROCK=[unset]" in probe.stdout, probe.stdout
+
+
+# ---- task 13.22: the prepared pane's shell writes no history (D6 "shell 历史") ------------------------
+
+
+def _interactive(tmp_path, posix, lines, env_extra=None):
+    """An interactive bash (no rc files) fed ``lines`` on stdin, with HOME in ``tmp_path``: the user's
+    real history file is never involved."""
+    home = tmp_path / ("home-posix" if posix else "home")
+    home.mkdir()
+    argv_ = ["bash", "--posix", "--noprofile", "-i"] if posix else ["bash", "--norc", "--noprofile", "-i"]
+    env = {"PATH": f"{fake_bin(tmp_path)}:/usr/bin:/bin", "HOME": str(home), **(env_extra or {})}
+    out = subprocess.run(argv_, input="\n".join(lines + ["exit"]) + "\n", env=env, capture_output=True, text=True,
+                         timeout=30)
+    return home, out
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+@pytest.mark.parametrize("posix", [False, True], ids=["bash", "bash-posix"])
+@pytest.mark.parametrize("custom", [False, True], ids=["default-histfile", "histfile-from-rc"])
+def test_prepared_shell_writes_no_history(tmp_path, posix, custom):
+    """Scenario: 准备过环境的终端不写历史 — for full_auto with variables and for read_only."""
+    for spec in (AgentSpec(kind="copilot", env={"X_VAR": "v"}).resolve("full_auto"), RO_COPILOT):
+        run_dir = tmp_path / spec.policy
+        (run_dir / "c").mkdir(parents=True)
+        (run_dir / "p").mkdir()
+        custom_file = run_dir / "custom_history"
+        extra = {"HISTFILE": str(custom_file)} if custom else {}
+        control, _ = _interactive(run_dir / "c", posix, ["echo MARK_CONTROL"], extra)
+        written = custom_file if custom else next(control.iterdir(), None)
+        assert written is not None and "MARK_CONTROL" in written.read_text(), "the control shell must write history"
+        if custom:
+            custom_file.unlink()
+        script = run_dir / "prep.sh"  # a fresh file: the command line removes it after sourcing
+        script.write_text(L.prep_script(spec, K.adapter("copilot")))
+        home, out = _interactive(run_dir / "p", posix,
+                                 ["echo MARK_BEFORE", L.prep_command(str(script)), "echo MARK_AFTER"], extra)
+        assert "__pa_env_ok_2" in out.stdout, out.stdout + out.stderr
+        assert list(home.iterdir()) == [] and not custom_file.exists()
+
+
+def test_history_file_is_unset_in_every_prepared_script():
+    for spec in (AgentSpec(kind="copilot", env={"X": "1"}), RO_COPILOT, claude_spec(policy="full_auto")):
+        assert "\\command unset HISTFILE 2>/dev/null" in L.prep_script(spec, K.adapter(spec.kind))

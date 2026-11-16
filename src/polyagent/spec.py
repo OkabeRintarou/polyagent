@@ -107,7 +107,6 @@ PROVIDER_ENV_NAMES = ("CLOUD_ML_REGION",)
 _MODEL_VARS = frozenset({"ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"})
 CUSTOM_HEADERS_VAR = "ANTHROPIC_CUSTOM_HEADERS"
 HEADER_NAME_RE = re.compile(r"[A-Za-z0-9-]+")
-MAX_CUSTOM_HEADERS = 1  # several headers (line-separated) are unverified: task 13.12
 # Per type: the only variables it may export, and those that must be present (name -> required
 # value, or None for any non-empty value). Applies to direct construction too (review C2).
 _PROVIDER_SCHEMA: dict[str, tuple[frozenset[str], dict[str, str | None]]] = {
@@ -132,13 +131,10 @@ _PROVIDER_SECRET_VARS = ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "AWS_SECRE
 
 
 def _header_lines(headers: Mapping[str, str]) -> str:
-    """``custom_headers`` as ``ANTHROPIC_CUSTOM_HEADERS``: one ``Name: value`` per line (D7)."""
+    """``custom_headers`` as ``ANTHROPIC_CUSTOM_HEADERS``: one ``Name: value`` per line (D7). Several
+    headers, and values with colons and spaces, arrive verbatim (task 13.12, claude 2.1.322, local stub)."""
     if not isinstance(headers, Mapping):
         raise InvalidConfigError("custom_headers must be a mapping of header names to values")
-    if len(headers) > MAX_CUSTOM_HEADERS:
-        raise InvalidConfigError(
-            "only one custom header is supported until the multi-header format is verified (task 13.12)"
-        )
     lines = []
     for name, value in headers.items():
         if not isinstance(name, str) or not HEADER_NAME_RE.fullmatch(name):
@@ -190,10 +186,11 @@ def _check_provider_env(ptype: str, env: Mapping[str, str]) -> None:
     extra = sorted(set(env) - allowed)
     if extra:
         raise InvalidConfigError(f"a {ptype} claude provider cannot set {extra}")
-    if CUSTOM_HEADERS_VAR in env:  # checked before the generic control-character rule (clearer message)
+    if CUSTOM_HEADERS_VAR in env:  # newline separates headers; every value is checked on its own
         _header_lines(_parse_header_lines(env[CUSTOM_HEADERS_VAR]))
     for name, value in env.items():
-        _plain(value, name)
+        if name != CUSTOM_HEADERS_VAR:
+            _plain(value, name)
     for name, want in required.items():
         if name not in env or (want is not None and env[name] != want):
             raise InvalidConfigError(f"a {ptype} claude provider needs {name}" + (f"={want}" if want else ""))

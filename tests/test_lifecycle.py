@@ -612,3 +612,25 @@ def test_start_can_run_on_several_threads_at_once(pa, client, tmp_path):
     assert started == {"alpha": out["alpha"].pane_id, "beta": out["beta"].pane_id}
     labels = {Marker.parse(a[1]).name for a in client.args_of("workspace_create")}
     assert labels == {"alpha", "beta"}
+
+
+@pytest.mark.parametrize("spec", [AgentSpec(kind="codex"), AgentSpec(kind="claude", provider=PROVIDER, policy="read_only")],
+                         ids=["full_auto-no-prep", "read_only"])
+def test_every_pane_is_created_without_shell_history(pa, client, tmp_path, spec):
+    """Task 13.19 / D6: the pane's shell gets HISTFILE=/dev/null from `workspace create --env`, so neither
+    the start command nor a preparation line reaches the history of the user running the server."""
+    pa.start(spec, tmp_path)
+    assert client.workspace_env == [{"HISTFILE": "/dev/null"}]
+
+
+def test_workspace_create_passes_env_as_options():
+    from polyagent.herdr import HerdrClient
+
+    c = HerdrClient.__new__(HerdrClient)
+    seen = []
+    c.call = lambda *args: seen.append(args) or {}
+    c.workspace_create("/w d", "L", {"HISTFILE": "/dev/null", "A": "b c"})
+    assert seen == [("workspace", "create", "--cwd", "/w d", "--no-focus", "--label", "L",
+                     "--env", "HISTFILE=/dev/null", "--env", "A=b c")]
+    c.workspace_create("/w", "L")
+    assert seen[-1] == ("workspace", "create", "--cwd", "/w", "--no-focus", "--label", "L")

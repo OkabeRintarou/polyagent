@@ -262,8 +262,7 @@ $ herdr session delete $S --json
 | `ctrl+c`（`C-c` 同） | 接受 | `^C` |
 | `bogus-key` | `invalid_key`（`unsupported key bogus-key`），没有写入任何字节 | — |
 
-herdr 的说明（`herdr --skill`）：发送前先校验全部按键，再写入字节。`agent send-keys` 对同一组名字的核对要等第 8 组的
-真实 agent 夹具，13.13 因此未勾选。
+herdr 的说明（`herdr --skill`）：发送前先校验全部按键，再写入字节。`agent send-keys` 对同一组名字的核对见下文“任务 13.13（完成）”。
 
 ### 返回结构（只列库和假 herdr 用到的字段）
 
@@ -289,6 +288,43 @@ herdr 的说明（`herdr --skill`）：发送前先校验全部按键，再写�
 
   `evidence:` 是规则匹配到的屏幕原文（截断），可能含 prompt 的回显；`manifest:` 含用户主目录下的路径。库的超时错误
   只保留 `agent:`、`state:`、`rule:` 三行（`agent._diagnostics`），其余由架构师决定（阶段 5 评审 A7）。
+
+## 任务 13.13（完成）：具名 agent 上的按键名与返回结构（herdr 0.9.5，阶段 7）
+
+用例：`tests/integration/test_herdr_contract.py::test_named_agent_contract`。在实验室的临时 session 里以 claude 对着本地的
+Anthropic 兼容桩（标准库，127.0.0.1）启动一个具名 agent，不消耗额度、没有请求离开本机。结束后 session 列表前后都是
+`default`、`racer`。
+
+- `agent send-keys <具名 agent> <键>`：库用到的全部按键名（`agent.KEYS` 的值：`enter`、`esc`、`tab`、`up`、`down`、
+  `left`、`right`、`backspace`、`ctrl+u`、`ctrl+c`）逐个发送，退出码都是 0。`bogus-key` 返回退出码 1，错误码 `invalid_key`。
+- `agent get <名字>` 的 `result.agent` 与 `agent list` 中对应条目的键相同：
+  `agent`（kind 标签）、`agent_status`、`cwd`、`focused`、`foreground_cwd`、`interactive_ready`、`name`、`pane_id`、
+  `revision`、`state_change_seq`、`tab_id`、`terminal_id`、`terminal_title`、`terminal_title_stripped`、`workspace_id`。
+  没有安装 herdr 自己的 integration 时**没有 `agent_session` 这个键**（不是 null）。库只用 `name`、`workspace_id`、
+  `pane_id`、`agent_status`、`state_change_seq`，`agent_session` 用 `.get()` 读，缺省时按 D12 的其它方式绑定日志。
+- `pane process-info --pane P` 的 `result.process_info`：`foreground_process_group_id`、`foreground_processes`、
+  `pane_id`、`shell_pid`；`foreground_processes` 的元素：`argv`、`cmdline`、`cwd`、`name`、`pid`。agent 运行时前台进程里
+  有一个 `pid != shell_pid` 的条目。
+- 假 herdr（`tests/fakeclient.py`）的 `add_agent` 按上面的键返回条目，同样没有 `agent_session`。
+
+## 任务 13.19：创建 workspace 时给 pane 的 shell 设环境变量（herdr 0.9.5，阶段 7）
+
+`herdr workspace create --help`：`--env <KEY=VALUE>  Set an environment variable for the launched process`，可重复。
+
+用例：`tests/integration/test_herdr_contract.py::test_workspace_create_env_reaches_the_pane_shell`。
+
+```
+$ herdr --session $S workspace create --cwd <dir> --label pa-env-probe --no-focus \
+    --env 'PA_ENV_PROBE=hello world' --env HISTFILE=<临时根>/probe-history
+$ herdr --session $S pane run <pane> 'echo "P=[$PA_ENV_PROBE] H=[${HISTFILE-unset}]"'
+$ herdr --session $S pane read <pane> --source recent --lines 20
+P=[hello world] H=[<临时根>/probe-history]
+```
+
+结论：这样设置的变量进入 pane 的 shell（值含空格也原样）。按 D6 和本任务的“完成后”，库创建每个 workspace 时都带
+`--env HISTFILE=/dev/null`（`manager.PANE_ENV`），不执行准备脚本的启动同样不写 shell 历史；这个值不是凭据，出现在
+argv 里没有问题。真实 pane 已核对：库启动的 agent 所在 pane 的 shell 环境里有 `HISTFILE=/dev/null`
+（`test_named_agent_contract`）。
 
 ## 任务 13.17：准备脚本在 zsh、ksh 里的表现（阶段 4 第二轮返工）
 

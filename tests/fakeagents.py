@@ -13,6 +13,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import pytest
+
 from polyagent import kinds as K
 from polyagent._rules import validate_agent_name, validate_discussion_id
 from polyagent._prompt import sanitize
@@ -81,7 +83,8 @@ class FakeAgent:
     def ask_reply(self, text: str, timeout: float, cancel: threading.Event | None = None) -> Reply:
         if self.closed:
             raise AgentNotFoundError(f"agent {self.name} has been closed")
-        assert isinstance(timeout, float) and timeout > 0, timeout
+        if not (isinstance(timeout, float) and timeout > 0):  # pytest.fail is a BaseException: never absorbed
+            pytest.fail(f"ask timeout must be a positive float, got {timeout!r}")
         sanitize(K.adapter(self.kind), text)  # raises like the real handle
         self.prompts.append(text)
         self.timeouts.append(timeout)
@@ -91,11 +94,12 @@ class FakeAgent:
         if turn.barrier is not None:
             turn.barrier.wait()
         if turn.wait_cancel:
-            assert cancel is not None
+            if cancel is None:
+                pytest.fail("a waiting turn needs the cancel event")
             deadline = time.monotonic() + 10
             while not cancel.is_set() and not self.gone.is_set():
                 if time.monotonic() > deadline:
-                    raise AssertionError("the test never cancelled")
+                    pytest.fail("the test never cancelled")
                 time.sleep(0.005)
             if self.gone.is_set() and not cancel.is_set():  # like the real handle: close() ends the ask
                 raise AgentNotFoundError(f"agent {self.name} has been closed")
@@ -142,7 +146,8 @@ class FakeFactory:
     def start(self, spec, cwd, name=None, start_timeout=60, *, _discussion_id=None, _default_policy="full_auto"):
         validate_agent_name(name)  # what the real PolyAgent.start checks (review T4)
         validate_discussion_id(_discussion_id)
-        assert _default_policy == "read_only" and spec.policy == "read_only"
+        if not (_default_policy == "read_only" and spec.policy == "read_only"):
+            pytest.fail("discussion members must be started read_only")
         member = name.rsplit("-", 1)[0]
         with self.lock:
             self.calls.append({"spec": spec, "cwd": cwd, "name": name, "start_timeout": start_timeout,
