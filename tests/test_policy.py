@@ -457,3 +457,44 @@ def test_new_variable_families_refused_under_read_only(kind, name, repo):
     with pytest.raises(PolicyNotSupportedError):
         P.check_static(ro(kind, env={name: "1"}), repo)
     assert P.check_static(AgentSpec(kind=kind, env={name: "1"}), repo).policy == "full_auto"
+
+
+# ---- phase-3 re-review regressions (N1–N3) -------------------------------------------------------
+
+
+def test_symlink_followed_by_dotdot_checks_the_real_directory(repo, tmp_path_factory):
+    """Review N1: `out/link/..` is the repository root when `link` points into the repository;
+    abspath would turn it into `out` before resolving the link."""
+    (repo / ".mcp.json").write_text("{}")
+    out = tmp_path_factory.mktemp("out")
+    (out / "link").symlink_to(repo / "pkg")
+    with pytest.raises(PolicyNotSupportedError):
+        P.check_static(ro("copilot"), str(out / "link") + "/..")
+
+
+@pytest.mark.parametrize(
+    "kind,arg",
+    [("copilot", "-sr"), ("copilot", "-sp"), ("copilot", "-si"), ("copilot", "-sir"), ("claude", "-vp"),
+     ("cursor", "-xf"), ("codex", "-xm=gpt"), ("codex", "-xC")],
+)
+def test_clustered_short_options_hiding_a_reserved_one(kind, arg, repo):
+    """Review N2: `-sr` is `-s -r` for clap-style parsers."""
+    with pytest.raises(InvalidConfigError):
+        P.check_static(AgentSpec(kind=kind, extra_args=[arg]), repo)
+
+
+@pytest.mark.parametrize(
+    "kind,arg",
+    [("claude", "--from-pr"), ("claude", "--teleport"), ("claude", "--cloud"), ("claude", "--bg"),
+     ("claude", "--background"), ("claude", "--desktop"), ("claude", "--worktree"), ("claude", "-w"),
+     ("claude", "--remote-control"), ("claude", "--no-session-persistence"), ("copilot", "--acp"), ("codex", "--cd"), ("codex", "-C"), ("codex", "--remote")],
+)
+def test_more_reserved_session_and_run_mode_options(kind, arg, repo):
+    """Review N3: options of the same three classes found in each CLI's --help."""
+    with pytest.raises(InvalidConfigError):
+        P.check_static(AgentSpec(kind=kind, extra_args=[arg, "x"]), repo)
+
+
+def test_short_non_reserved_options_still_pass(repo):
+    argv = P.build_args(P.check_static(AgentSpec(kind="copilot", extra_args=["-s"]), repo), repo, session_id=SID)
+    assert argv[0] == "-s"

@@ -23,15 +23,19 @@ READ_ONLY = "read_only"
 MCP_ALLOW = "mcp_allow"
 LOG_ADAPTER = "log_adapter"
 INTERRUPT_KEY = "interrupt_key"
+# Screen capture (D12): the footer markers and echo rules are backed by screen samples of this kind.
+SCREEN_CAPTURE = "screen_capture"
 # Turn attribution (D8): tools that keep producing output after the turn's end marker are disabled.
 # Stated per policy because copilot differs between the two (task 13.1).
 TURN_ATTRIBUTION_READ_ONLY = "turn_attribution.read_only"
 TURN_ATTRIBUTION_FULL_AUTO = "turn_attribution.full_auto"
 
+IGNORE_USER_CONFIG = "ignore_user_config"
+
 
 def turn_attribution(policy: str) -> str:
+    """The capability key for the turn-attribution tool limits under ``policy``."""
     return TURN_ATTRIBUTION_READ_ONLY if policy == READ_ONLY else TURN_ATTRIBUTION_FULL_AUTO
-IGNORE_USER_CONFIG = "ignore_user_config"
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,8 @@ class KindAdapter:
     deny_key: str | None
     interrupt_key: str
     log_binding: str | None  # "session_id" | "rollout_fd" | None (D12)
+    # Screen-capture footer markers (D12): the first matching line ends the reply region.
+    footer: tuple[re.Pattern[str], ...] = ()
     trust_by_flag: bool = False  # cursor: `--trust` instead of a dialog (persisted, D9)
     secret_env_flag: str | None = None  # hides injected variable names from tools under read_only
     notes: tuple[str, ...] = field(default=())
@@ -200,7 +206,13 @@ ADAPTERS: dict[str, KindAdapter] = {
         model_flag="--model",
         reserved_options=(
             "--model", "--session-id", "--dangerously-skip-permissions", "--disallowedTools", "--disallowed-tools",
-            "--resume", "-r", "--continue", "-c", "--fork-session", "--print", "-p",
+            # session identity
+            "--resume", "-r", "--continue", "-c", "--fork-session", "--from-pr", "--teleport", "--cloud",
+            "--no-session-persistence",  # no session file: the log binding would fail
+            # run mode
+            "--print", "-p", "--bg", "--background", "--desktop",
+            # move the session (worktree: the log path follows the cwd) or let others type into it (review N3)
+            "--worktree", "-w", "--remote-control",
         ),
         read_only_args=(
             "--permission-mode", "dontAsk", "--restricted", "--disable-slash-commands", "--strict-mcp-config",
@@ -217,6 +229,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             MCP_ALLOW: Capability(VERIFIED, note="server definitions come from AgentSpec.mcp_config"),
             LOG_ADAPTER: Capability(VERIFIED),
             INTERRUPT_KEY: Capability(VERIFIED),
+            SCREEN_CAPTURE: Capability(UNVERIFIED, task="13.16", note="footer markers inferred from the UI, no screen samples"),
             TURN_ATTRIBUTION_READ_ONLY: Capability(UNVERIFIED, task="13.2", note="async tool list in use; residual risk documented"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(UNVERIFIED, task="13.2", note="async tool list in use; residual risk documented"),
             IGNORE_USER_CONFIG: Capability(VERIFIED, note="--restricted"),
@@ -244,6 +257,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         deny_key="esc",
         interrupt_key="esc",
         log_binding="session_id",
+        footer=(re.compile(r"^\s*─{10,}"), re.compile(r"^\s*❯"), re.compile(r"^\s*\? for shortcuts")),
     ),
     "copilot": KindAdapter(
         kind="copilot",
@@ -252,7 +266,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         model_flag="--model",
         reserved_options=(
             "--model", "--session-id", "--yolo", "--no-ask-user", "--no-auto-update", "--excluded-tools",
-            "--available-tools", "--resume", "-r", "--continue", "--prompt", "-p", "--interactive", "-i",
+            "--available-tools", "--resume", "-r", "--continue", "--prompt", "-p", "--interactive", "-i", "--acp",
         ),
         read_only_args=(
             "--deny-tool", "shell", "--deny-tool", "write", "--deny-tool", "memory", "--deny-tool", "url",
@@ -270,6 +284,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             MCP_ALLOW: Capability(UNVERIFIED, task="13.3", note="third-party MCP disabled by the account's org policy"),
             LOG_ADAPTER: Capability(VERIFIED),
             INTERRUPT_KEY: Capability(UNVERIFIED, task="13.3"),
+            SCREEN_CAPTURE: Capability(UNVERIFIED, task="13.16", note="footer markers inferred from the UI, no screen samples"),
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="the tool allow-list has no background tool (task 13.1)"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(
                 VERIFIED, task="13.10",
@@ -301,6 +316,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         interrupt_key="esc",
         log_binding="session_id",
         secret_env_flag="--secret-env-vars",
+        footer=(re.compile(r"^\s*─{10,}"), re.compile(r"^\s*❯\s*$")),
     ),
     "codex": KindAdapter(
         kind="codex",
@@ -308,7 +324,9 @@ ADAPTERS: dict[str, KindAdapter] = {
         executable="codex",
         model_flag="--model",
         # Resume / fork / exec are subcommands, not options; `-c` stays available (D8).
-        reserved_options=("--model", "-m", "--no-daemon", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"),
+        # `-C`/`--cd` move the agent away from the checked cwd, `--remote` attaches to a remote server (review N3).
+        reserved_options=("--model", "-m", "--no-daemon", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox",
+                          "--cd", "-C", "--remote"),
         # Final web-search/feature switches: task 13.4 (read_only is unverified until then).
         read_only_args=(
             "--no-daemon", "--no-alt-screen", "--sandbox", "read-only", "--ask-for-approval", "never",
@@ -323,6 +341,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             MCP_ALLOW: Capability(UNSUPPORTED, note="not supported in v1"),
             LOG_ADAPTER: Capability(VERIFIED),
             INTERRUPT_KEY: Capability(VERIFIED),
+            SCREEN_CAPTURE: Capability(VERIFIED),
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="no asynchronous tools"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(VERIFIED, note="no asynchronous tools"),
             IGNORE_USER_CONFIG: Capability(UNVERIFIED, task="13.5"),
@@ -347,6 +366,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         deny_key=None,
         interrupt_key="esc",
         log_binding="rollout_fd",
+        footer=(re.compile(r"^\s*› "), re.compile(r"^\s*›\s*$")),
     ),
     "cursor": KindAdapter(
         kind="cursor",
@@ -366,6 +386,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             MCP_ALLOW: Capability(UNSUPPORTED),
             LOG_ADAPTER: Capability(UNVERIFIED, task="13.7"),
             INTERRUPT_KEY: Capability(VERIFIED),
+            SCREEN_CAPTURE: Capability(VERIFIED),
             TURN_ATTRIBUTION_READ_ONLY: Capability(UNSUPPORTED, note="read_only is not supported"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(UNVERIFIED, task="13.7"),
             IGNORE_USER_CONFIG: Capability(UNVERIFIED, task="13.5"),
@@ -391,6 +412,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         interrupt_key="esc",
         log_binding=None,
         trust_by_flag=True,
+        footer=(re.compile(r"^\s*→ Add a follow-up"), re.compile(r"\(shift\+tab to cycle\)\s*$")),
     ),
 }
 

@@ -9,18 +9,33 @@ from __future__ import annotations
 import logging
 import os
 import re
+import secrets
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Iterable, TypeVar
 
+from . import _launch
 from . import herdr as H
+from . import kinds as K
 from . import locks
-from ._rules import AGENT_NAME_RE, DISCUSSION_ID_RE, validate_discussion_id
-from .errors import HerdrError, HerdrUnavailableError, InvalidConfigError, PolyAgentError
+from . import policy as P
+from .agent import Agent
+from ._rules import AGENT_NAME_RE, DISCUSSION_ID_RE, validate_agent_name, validate_discussion_id
+from .errors import (
+    AgentNameConflictError,
+    AgentNotFoundError,
+    AgentTimeoutError,
+    HerdrError,
+    HerdrUnavailableError,
+    InvalidConfigError,
+    PolyAgentError,
+)
 from .kinds import KINDS, is_config_env
+from .spec import AgentSpec
 
 log = logging.getLogger("polyagent")
 T = TypeVar("T")
@@ -352,6 +367,141 @@ class PolyAgent:
             if not isinstance(wid, str) or not wid:
                 raise HerdrError(H.BAD_RESPONSE, f"workspace without workspace_id: {ws!r}"[:500])
             out.append(OwnedWorkspace(wid, marker, _is_live(live, marker.name, wid)))
+        return out
+
+    # ---- agents (D9, D4) -------------------------------------------------------
+
+    def start(
+        self,
+        spec: AgentSpec,
+        cwd: str | os.PathLike[str],
+        name: str | None = None,
+        start_timeout: float = 60,
+        *,
+        _discussion_id: str | None = None,
+        _default_policy: str = "full_auto",
+    ) -> Agent:
+        """Start an agent in its own workspace and return its handle once it accepts input (D9)."""
+        if not isinstance(spec, AgentSpec):
+            raise InvalidConfigError("spec must be an AgentSpec")
+        if isinstance(start_timeout, bool) or not isinstance(start_timeout, (int, float)) or not 3 < start_timeout <= 300:
+            raise InvalidConfigError("start_timeout must be in (3, 300] seconds")
+        if name is not None:
+            validate_agent_name(name)
+        if _discussion_id is not None:
+            validate_discussion_id(_discussion_id)
+        # The working directory is resolved once; the checks, the workspace and the log path all use
+        # this real path (review N1). The repo-config check also walks the literal path.
+        if not os.path.isdir(cwd):
+            raise InvalidConfigError(f"working directory {os.fspath(cwd)!r} does not exist")
+        real_cwd = os.path.realpath(cwd)
+        spec = P.check_static(spec, cwd, _default_policy)
+        return self._with_server(lambda: self._start(spec, real_cwd, name, start_timeout, _discussion_id))
+
+    def _start(self, spec: AgentSpec, cwd: str, name: str | None, start_timeout: float,
+               discussion_id: str | None) -> Agent:
+        live = {a.get("name") for a in self._herdr.agent_list()}
+        lock = None
+        if name is None:
+            for _ in range(8):
+                candidate = f"{spec.kind}-{secrets.token_hex(3)}"
+                if candidate not in live:
+                    lock = locks.try_lock(self._session, candidate)
+                    if lock is not None:
+                        name = candidate
+                        break
+            if lock is None:
+                raise AgentNameConflictError("could not find a free agent name")
+        else:
+            if name in live:
+                raise AgentNameConflictError(f"agent name {name!r} is used by a live agent in session {self._session!r}")
+            lock = locks.acquire_for_start(self._session, name)
+        try:
+            for ow in self._owned():  # a same-name orphan (e.g. restored by a server restart), under our lock
+                if ow.marker.name == name and not ow.live:
+                    self._close_if_marked(ow, require_orphan=True)
+            return self._launch(spec, cwd, name, start_timeout, discussion_id)
+        finally:
+            lock.release()
+
+    def _launch(self, spec: AgentSpec, cwd: str, name: str, start_timeout: float,
+                discussion_id: str | None) -> Agent:
+        adapter = K.adapter(spec.kind)
+        sid = str(uuid.uuid4()) if adapter.session_id_flag else None
+        marker = Marker(name=name, kind=spec.kind, policy=spec.policy, created=int(time.time()),  # type: ignore[arg-type]
+                        session_id=sid, discussion_id=discussion_id)
+        label = marker.encode()
+        created = self._herdr.workspace_create(cwd, label)
+        wid = (created.get("workspace") or {}).get("workspace_id")
+        pane = (created.get("root_pane") or {}).get("pane_id")
+        if not isinstance(wid, str) or not isinstance(pane, str):
+            raise HerdrError(H.BAD_RESPONSE, "workspace create returned no workspace or pane id")
+        ok = False
+        try:
+            if _launch.needs_prep(spec, adapter):
+                _launch.run_prep(self._herdr, pane, spec, adapter)
+            args = P.build_args(spec, cwd, session_id=sid)
+            try:
+                _launch.agent_start(self._herdr, name, adapter.herdr_kind, pane, int(start_timeout * 1000), args)
+            except HerdrError as e:
+                if e.code == H.AGENT_NAME_TAKEN:
+                    raise AgentNameConflictError(f"agent name {name!r} is already used in session {self._session!r}") from None
+                if e.code == H.TIMEOUT:
+                    raise AgentTimeoutError(f"agent {name} did not become ready within {start_timeout:g}s") from None
+                raise
+            _launch.handle_dialogs(self._herdr, name, pane, spec, adapter)
+            ok = True
+        finally:
+            if not ok:
+                _launch.start_failed_cleanup(self._herdr, wid)
+        log.info("started agent %s (%s, %s) in workspace %s", name, spec.kind, spec.policy, wid)
+        return Agent(self._herdr, name=name, kind=spec.kind, policy=spec.policy, workspace_id=wid,  # type: ignore[arg-type]
+                     pane_id=pane, label=label, session_id=sid)
+
+    def attach(self, name: str) -> Agent:
+        """A handle for a live polyagent agent of this session, rebuilt from its ownership marker."""
+        validate_agent_name(name)
+        return self._with_server(lambda: self._attach(name))
+
+    def _attach(self, name: str) -> Agent:
+        try:
+            info = self._herdr.agent_get(name)
+        except HerdrError as e:
+            if e.code == H.AGENT_NOT_FOUND:
+                raise AgentNotFoundError(f"no live agent named {name!r} in session {self._session!r}") from None
+            raise
+        return self._handle(info, name)
+
+    def _handle(self, info: dict[str, Any], name: str) -> Agent:
+        wid, pane = info.get("workspace_id"), info.get("pane_id")
+        if not isinstance(wid, str) or not isinstance(pane, str):
+            raise AgentNotFoundError(f"agent {name!r} has no workspace")
+        try:
+            label = self._herdr.workspace_get(wid).get("label")
+        except HerdrError as e:
+            if e.code == H.WORKSPACE_NOT_FOUND:
+                raise AgentNotFoundError(f"agent {name!r} has no workspace") from None
+            raise
+        marker = Marker.parse(label)
+        if marker is None or marker.name != name:
+            raise AgentNotFoundError(f"agent {name!r} was not started by polyagent")
+        return Agent(self._herdr, name=name, kind=marker.kind, policy=marker.policy, workspace_id=wid, pane_id=pane,
+                     label=str(label), session_id=marker.session_id)
+
+    def list(self) -> list[Agent]:
+        """Handles of the live agents of this session that polyagent started (marker name == agent name)."""
+        return self._with_server(self._list)
+
+    def _list(self) -> list[Agent]:
+        labels = {w.get("workspace_id"): w.get("label") for w in self._herdr.workspace_list()}
+        out = []
+        for a in self._herdr.agent_list():
+            name, wid = a.get("name"), a.get("workspace_id")
+            marker = Marker.parse(labels.get(wid))
+            if not isinstance(name, str) or marker is None or marker.name != name or not isinstance(a.get("pane_id"), str):
+                continue
+            out.append(Agent(self._herdr, name=name, kind=marker.kind, policy=marker.policy, workspace_id=wid,
+                             pane_id=a["pane_id"], label=str(labels[wid]), session_id=marker.session_id))
         return out
 
     def owned_workspaces(self) -> list[OwnedWorkspace]:

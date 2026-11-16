@@ -239,3 +239,60 @@ $ herdr session delete $S --json
 结论：herdr 的 session 目录（含 socket）是 `${XDG_CONFIG_HOME:-~/.config}/herdr/sessions/<name>/`。
 环境不同的调用方对同一个名字会看到不同的 server，甚至各自拉起一个。库因此在所有 herdr 调用和 server 环境中剔除
 `XDG_CONFIG_HOME`，并拒绝把它列为透传变量（design D1、D3）。
+
+## 任务 13.13（部分）：按键名与返回结构（herdr 0.9.5，阶段 4 第二轮返工）
+
+只用 herdr 和随机 `polyagent-test-*` session，没有启动任何 agent CLI；结束后 `session stop` + `delete`，session 列表前后都是
+`default`、`racer`。
+
+### 按键名
+
+`agent send-keys` 只接受 `agent start` 得到的具名 agent：`pane report-agent` 登记的 pane 报 `agent_not_ready`
+（“is not an active named agent”），假可执行文件（PATH 里一个名为 `pi` 的脚本）`agent start` 超时，未被识别为 agent。
+所以按键名是在同一个 pane 上用 `pane send-keys` 核对的：pane 里 `stty raw -echo; cat -v`，每个键之后再发一个 `|`。
+
+| 按键名 | `pane send-keys` | `cat -v` 看到的字节 |
+|---|---|---|
+| `enter` | 接受 | `^M` |
+| `esc`（`escape` 同） | 接受 | `^[` |
+| `tab` | 接受 | 制表符 |
+| `up`、`down`、`left`、`right` | 接受 | `^[[A`、`^[[B`、`^[[D`、`^[[C`（`Down` 也接受） |
+| `backspace` | 接受 | `^?` |
+| `ctrl+u` | 接受 | `^U` |
+| `ctrl+c`（`C-c` 同） | 接受 | `^C` |
+| `bogus-key` | `invalid_key`（`unsupported key bogus-key`），没有写入任何字节 | — |
+
+herdr 的说明（`herdr --skill`）：发送前先校验全部按键，再写入字节。`agent send-keys` 对同一组名字的核对要等第 8 组的
+真实 agent 夹具，13.13 因此未勾选。
+
+### 返回结构（只列库和假 herdr 用到的字段）
+
+- `workspace create --cwd <含空格的目录> --label L`：`result.workspace.{workspace_id,label}`，
+  `result.root_pane.{pane_id,workspace_id,cwd,agent_status}`；另有 `result.tab`、`result.type == "workspace_created"`。
+  工作目录含空格时原样返回。
+- `pane process-info --pane P`：`result.process_info.{pane_id,shell_pid,foreground_process_group_id,foreground_processes}`，
+  `foreground_processes` 的元素是 `{pid,name,argv,cmdline,cwd}`；空闲的 bash pane 里前台进程就是 shell 自己（`pid == shell_pid`）。
+- `agent list` / `agent get`（`pane report-agent` 登记的条目）：`agent`（kind 标签）、`agent_status`、`state_change_seq`、
+  `cwd`、`foreground_cwd`、`pane_id`、`workspace_id`、`terminal_id`、`revision`；这种条目没有 `name`。具名 agent 的
+  `name` 字段与 `agent start` 的返回结构仍待第 8 组核对。
+- `agent explain`：没有检测到 agent 标签的目标返回错误码 `agent_explain_unavailable`（退出码 1）。库的超时错误在这种情况下
+  不带诊断文本（D11），与“完成前的行为”一致。
+
+## 任务 13.17：准备脚本在 zsh、ksh 里的表现（阶段 4 第二轮返工）
+
+本机没有这两种 shell，也没有 root；用 `apt-get download zsh ksh93u+m` 下载、`dpkg-deb -x` 解到临时目录使用
+（zsh 5.9，ksh 93u+m/1.0.8）。不需要 agent。
+
+1. 非交互（`sh -c`）与交互（`-i -c`）各跑一次 `tests/test_prep_shell.py` 的做法：
+   - zsh：`command` 只执行外部命令，不执行内建命令（POSIX_BUILTINS 未开时的 zsh 行为）。`\command export K=…`、
+     `\command unset …`、`\command unalias …`、`\command set +xv` 全部报 `command not found`。后果：只注入变量的
+     `full_auto` 启动时变量没有导出，脚本仍以 0 结束（`__pa_env_ok`）；关闭回显的那一行无效，`set -v` 下导出行连同值显示在屏幕上。
+     `read_only` 与显式 provider 由复核拦下（`permission_env`、`provider_env`）。
+   - ksh93：清除、导出、复核都正常；但 `set -v` 下 `.` 读入整个脚本后先整段回显，再执行第一行的 `set +xv`，导出行连同值
+     出现在屏幕上。
+2. 真实 pane（临时 session，pane 里 `exec zsh -f` / `exec ksh`，手工 `set -v; . <脚本>`）：zsh 屏幕上出现
+   `command not found: export` 和导出的值，变量未设置；ksh 屏幕上出现导出的值，变量已设置。两者的 `pane process-info`
+   前台进程名分别是 `zsh`、`ksh`。
+
+结论：两者都不通过，按 13.17 的“完成后”从接受的名单里去掉（`_launch.POSIX_SHELLS` 只剩 bash、sh、dash），
+pane shell 是 zsh 或 ksh 时启动抛 `HerdrError(code="unsupported_shell")`（真实 pane 已确认）。

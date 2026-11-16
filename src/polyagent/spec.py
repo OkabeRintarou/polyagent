@@ -10,7 +10,8 @@ import enum
 import os
 import re
 import stat
-from dataclasses import dataclass, field
+import urllib.parse
+from dataclasses import InitVar, dataclass, field
 from typing import Any, Iterator, Mapping
 
 from ._rules import KINDS
@@ -165,6 +166,25 @@ def _parse_header_lines(text: str) -> dict[str, str]:
     return headers
 
 
+def _check_base_url(url: str) -> None:
+    """http(s) URL without embedded credentials: user info, a query string or a fragment would carry
+    secrets outside ``secret_values()`` (review N5); credentials go through auth_token / api_key /
+    custom_headers. The URL itself is never echoed in the error."""
+    if not re.match(r"https?://[^\s/]+", url):
+        raise InvalidConfigError("base_url must be an http(s) URL")
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        raise InvalidConfigError("base_url is not a valid URL") from None
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        raise InvalidConfigError("base_url must not contain user info; pass credentials as auth_token or api_key")
+    if parts.query or parts.fragment or "?" in url or "#" in url:
+        raise InvalidConfigError(
+            "base_url must not contain a query string or fragment; pass credentials as auth_token, api_key "
+            "or custom_headers"
+        )
+
+
 def _check_provider_env(ptype: str, env: Mapping[str, str]) -> None:
     allowed, required = _PROVIDER_SCHEMA[ptype]
     extra = sorted(set(env) - allowed)
@@ -180,8 +200,7 @@ def _check_provider_env(ptype: str, env: Mapping[str, str]) -> None:
     for name in _MODEL_VARS & set(env):
         _model(env[name])
     if ptype == "compatible":
-        if not re.match(r"https?://[^\s/]+", env["ANTHROPIC_BASE_URL"]):
-            raise InvalidConfigError("base_url must be an http(s) URL")
+        _check_base_url(env["ANTHROPIC_BASE_URL"])
         if ("ANTHROPIC_AUTH_TOKEN" in env) == ("ANTHROPIC_API_KEY" in env):
             raise InvalidConfigError("a compatible provider needs exactly one of auth_token or api_key")
     if ptype == "bedrock":
@@ -191,22 +210,32 @@ def _check_provider_env(ptype: str, env: Mapping[str, str]) -> None:
             raise InvalidConfigError("session_token needs access_key_id and secret_access_key")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ClaudeProvider:
     """Backend of one claude instance. Build with the class methods; direct construction gets the
-    same validation. Credentials stay out of ``repr``, :meth:`to_dict` and ``dataclasses.asdict``
-    rendered as text (the variable mapping only ever shows names)."""
+    same validation. The variables are not a dataclass field, so ``repr``, :meth:`to_dict` and
+    ``dataclasses.asdict`` all carry the type name only (D7, review N4); pickling keeps everything."""
 
     type: str
-    _env: Mapping[str, str] = field(repr=False)
+    # Defaults to None only so that `dataclasses.replace()` reaches the validation below and fails
+    # with InvalidConfigError instead of silently dropping or keeping the variables.
+    env_vars: InitVar[Mapping[str, str] | None] = None
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, env_vars: Mapping[str, str] | None) -> None:
         if self.type not in _PROVIDER_SCHEMA:
             raise InvalidConfigError(f"unknown claude provider type {self.type!r}")
-        if not isinstance(self._env, Mapping):
-            raise InvalidConfigError("provider variables must be a mapping")
-        _check_provider_env(self.type, self._env)
-        object.__setattr__(self, "_env", FrozenEnv(self._env))
+        if not isinstance(env_vars, Mapping):
+            raise InvalidConfigError("provider variables must be a mapping (build providers with the class methods)")
+        _check_provider_env(self.type, env_vars)
+        object.__setattr__(self, "_env", FrozenEnv(env_vars))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ClaudeProvider):
+            return NotImplemented
+        return self.type == other.type and self._env == other._env
+
+    def __hash__(self) -> int:
+        return hash((self.type, self._env))
 
     # -- constructors --
     @classmethod

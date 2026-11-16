@@ -46,8 +46,12 @@ def _reserved_hit(arg: str, reserved: tuple[str, ...]) -> str | None:
     for opt in reserved:
         if arg == opt or arg.startswith(opt + "="):  # exact, or `--opt=value`
             return opt
-        if len(opt) == 2 and not opt.startswith("--") and arg.startswith(opt) and not arg.startswith("--"):
-            return opt  # short option with its value attached: `-mgpt-5`
+    if arg.startswith("-") and not arg.startswith("--") and len(arg) > 2:
+        # Short options: attached value (`-mgpt-5`) or a cluster (`-sr` = `-s -r`). Any reserved short
+        # letter anywhere in the element counts; values must then be given as a separate element (review N2).
+        for opt in reserved:
+            if len(opt) == 2 and opt[0] == "-" and opt[1] != "-" and opt[1] in arg[1:].split("=", 1)[0]:
+                return opt
     if arg.startswith("--") and len(arg) > 2:
         name = arg.split("=", 1)[0]
         for opt in reserved:
@@ -142,7 +146,9 @@ def check_repo_config(adapter: K.KindAdapter, cwd: str | os.PathLike[str]) -> No
     if adapter.excludes_project_config or not adapter.repo_config_paths:
         return
     literal = Path(os.path.abspath(cwd))
-    dirs = dict.fromkeys(_repo_chain(literal) + _repo_chain(Path(os.path.realpath(literal))))
+    # realpath of the path as given: abspath would drop `link/..` before the link is resolved (review N1).
+    real = Path(os.path.realpath(cwd))
+    dirs = dict.fromkeys(_repo_chain(literal) + _repo_chain(real))
     for d in dirs:
         for rel in adapter.repo_config_paths:
             p = d / rel

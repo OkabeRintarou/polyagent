@@ -348,7 +348,7 @@ def test_asdict_does_not_render_credentials():
     p = ClaudeProvider.bedrock("us-east-1", access_key_id="AKIDEXAMPLE", secret_access_key=TOKEN, session_token="sess-" + TOKEN)
     spec = AgentSpec(kind="claude", provider=p, env={"GH_TOKEN": "gh-" + TOKEN})
     dumped = json.dumps(dataclasses.asdict(spec), default=str)
-    assert TOKEN not in dumped and "AWS_SECRET_ACCESS_KEY" in dumped
+    assert TOKEN not in dumped and '"provider": {"type": "bedrock"}' in dumped
     assert set(p.secret_values()) == {TOKEN, "sess-" + TOKEN}
     assert set(spec.secret_values()) == {TOKEN, "sess-" + TOKEN, "gh-" + TOKEN}
 
@@ -425,3 +425,34 @@ def test_text_and_dict_forms_carry_no_header_value_or_endpoint():
     spec = AgentSpec(kind="claude", provider=p)
     for text in (repr(spec), str(spec), repr(p), json.dumps(dataclasses.asdict(spec), default=str), json.dumps(p.to_dict())):
         assert TOKEN not in text and HEADER_VALUE not in text and "llm.example.com" not in text
+
+
+# ---- phase-3 re-review regressions (N4, N5) --------------------------------------------------------
+
+
+def test_asdict_of_a_provider_is_the_type_name_only():
+    """Review N4 / D7: even an encoder that expands every mapping finds no variables."""
+    p = ClaudeProvider.compatible(ENDPOINT, auth_token=TOKEN, custom_headers={"X-Example-Header": HEADER_VALUE})
+    assert dataclasses.asdict(p) == {"type": "compatible"}
+    assert dataclasses.asdict(AgentSpec(kind="claude", provider=p))["provider"] == {"type": "compatible"}
+    again = pickle.loads(pickle.dumps(p))
+    assert again == p and again.env() == p.env() and hash(again) == hash(p)
+    assert p != ClaudeProvider.compatible(ENDPOINT, auth_token="other-" + TOKEN)
+    for ptype in ("compatible", "official", "bedrock"):
+        with pytest.raises(InvalidConfigError):
+            dataclasses.replace(p, type=ptype)  # the variables cannot be dropped or swapped silently
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://user:secret-pass@llm.example.com/v1", "https://user@llm.example.com", "https://llm.example.com/v1?api-key=abc",
+     "https://llm.example.com/v1?", "https://llm.example.com/#frag"],
+)
+def test_endpoint_url_must_not_carry_credentials(url):
+    """Review N5: user info or a query string would carry secrets past secret_values()."""
+    with pytest.raises(InvalidConfigError) as ei:
+        ClaudeProvider.compatible(url, auth_token=TOKEN)
+    assert "secret-pass" not in str(ei.value) and "abc" not in str(ei.value)
+    with pytest.raises(InvalidConfigError):
+        ClaudeProvider("compatible", {"ANTHROPIC_BASE_URL": url, "ANTHROPIC_AUTH_TOKEN": TOKEN})
+    assert ClaudeProvider.compatible("http://127.0.0.1:8080/anthropic", auth_token=TOKEN)

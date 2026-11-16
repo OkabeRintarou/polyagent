@@ -19,12 +19,15 @@ from .errors import (
     PromptNotDeliveredError,
     ReplyNotFoundError,
 )
+from .agent import Agent, Reply
 from .manager import PolyAgent
 from .spec import AgentSpec, ClaudeProvider, ToolPolicy
 
 __version__ = "0.1.0"
 
 __all__ = [
+    "Agent",
+    "Reply",
     "AgentSpec",
     "ClaudeProvider",
     "ToolPolicy",
