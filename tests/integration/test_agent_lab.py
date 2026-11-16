@@ -340,6 +340,12 @@ def test_lab_pane_history_goes_to_the_lab_root(real_herdr, tmp_path):
         pane, wid = created["root_pane"]["pane_id"], created["workspace"]["workspace_id"]
         time.sleep(1.0)  # let the shell print its prompt
         assert lab.herdr("pane", "run", pane, f"echo {marker}").returncode == 0
+        # Every lab pane also keeps claude from updating the user's install (phase 8).
+        assert lab.herdr("pane", "run", pane, 'echo "upd=[$DISABLE_AUTOUPDATER]"').returncode == 0
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and "upd=[1]" not in lab.herdr("pane", "read", pane).stdout:
+            time.sleep(0.2)
+        assert "upd=[1]" in lab.herdr("pane", "read", pane).stdout
         assert lab.herdr("pane", "run", pane, "exit").returncode == 0
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline and not (lab.histfile.exists() and marker in lab.histfile.read_text()):

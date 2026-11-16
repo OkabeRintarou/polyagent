@@ -29,7 +29,7 @@ from typing import Any, Callable, Protocol, Sequence
 
 from .. import kinds as K
 from .. import policy as P
-from .._prompt import sanitize
+from .._prompt import max_text_bytes, sanitize
 from ..errors import (
     AgentBlockedError,
     AgentNotFoundError,
@@ -225,6 +225,8 @@ class Discussion:
             raise InvalidConfigError(f"{coordinator.kind} cannot be the coordinator: its replies cannot be read "
                                      "from a session log")
         self._coordinator = _member_spec(coordinator, COORDINATOR)
+        # One coordinator input: 64 KiB, or less where the coordinator's kind takes less (task 13.14).
+        self._budget = min(PR.INPUT_BUDGET_BYTES, max_text_bytes(K.adapter(self._coordinator.kind)))
         if isinstance(participants, (str, bytes)) or not isinstance(participants, Sequence):
             raise InvalidConfigError("participants must be a sequence of Participant")
         if not participants:
@@ -262,7 +264,6 @@ class Discussion:
         self._cancel = threading.Event()
         self._ran = threading.Lock()
         self._id = uuid.uuid4().hex
-        self._text = PR.ProtocolText({p.name: p.role for p in self._participants}, template)
 
     # ---- public -----------------------------------------------------------------
 
@@ -292,16 +293,18 @@ class Discussion:
         for name, spec in specs.items():  # defence in depth: members only ever run read_only (review C13)
             if spec.policy != READ_ONLY:
                 raise InvalidConfigError(f"{name}: discussion members always run read_only")
-        self._text.marker = secrets.token_hex(8)  # D13 "分隔标记", new for every run
-        opening = self._text.opening(requirement, self._max_rounds, self._total_timeout, self._turn_timeout)
-        first = opening + "\n" + self._text.reminder([PR.BRIEF], self._names(), None, None)
-        if len(first.encode("utf-8")) > PR.INPUT_BUDGET_BYTES:
-            raise InvalidConfigError("the requirement and the participant roles do not fit in one coordinator input "
-                                     f"({PR.INPUT_BUDGET_BYTES} bytes)")
         if not self._ran.acquire(blocking=False):
             raise InvalidConfigError("this Discussion has already been run")
         try:
-            run = _Run(self, requirement, specs, first, on_event)
+            # D13 "分隔标记": generated only once this call owns the run, and kept on the run's own text
+            # object, so a rejected concurrent run() cannot replace it (review C1).
+            text = PR.ProtocolText({p.name: p.role for p in self._participants}, self._template, secrets.token_hex(8))
+            opening = text.opening(requirement, self._max_rounds, self._total_timeout, self._turn_timeout)
+            first = opening + "\n" + text.reminder([PR.BRIEF], self._names(), None, None)
+            if len(first.encode("utf-8")) > self._budget:
+                raise InvalidConfigError("the requirement and the participant roles do not fit in one coordinator "
+                                         f"input ({self._budget} bytes)")
+            run = _Run(self, text, requirement, specs, first, on_event)
         except BaseException:
             self._ran.release()  # nothing was started; the object stays usable (review C14)
             raise
@@ -331,15 +334,16 @@ class Discussion:
 class _Run:
     """State of one :meth:`Discussion.run`."""
 
-    def __init__(self, d: Discussion, requirement: str, specs: dict[str, AgentSpec], first_input: str,
-                 on_event: Callable[[Event], Any] | None):
+    def __init__(self, d: Discussion, text: PR.ProtocolText, requirement: str, specs: dict[str, AgentSpec],
+                 first_input: str, on_event: Callable[[Event], Any] | None):
         self.d = d
+        self.text = text  # this run's texts and separator marker; never replaced while the run lives
         self.specs = specs
         self.first_input = first_input
         self.callback = on_event
         self.cancel = d._cancel
         self.id = d.id
-        values: list[str] = [d._text.marker]  # the separator marker is redacted like a credential (D13)
+        values: list[str] = [text.marker]  # the separator marker is redacted like a credential (D13)
         for spec in specs.values():
             values += spec.secret_values()
         self.redact = Redactor(values)
@@ -580,7 +584,7 @@ class _Run:
                 self.add(sender=COORDINATOR, receiver=None, type_=MessageType.COORDINATOR_OUTPUT,
                          content={"output": None, "errors": [detail]}, status=MessageStatus.INVALID, source=None,
                          started_at=started, duration=duration)
-                text = self.d._text.aborted(str(reply)) + self.reminder(allowed)
+                text = self.text.aborted(str(reply)) + self.reminder(allowed)
                 continue
             reply_text = PR.utf8_safe(reply.text)  # first step on any agent text (D13)
             value, err = PR.extract_action(reply_text)
@@ -595,7 +599,7 @@ class _Run:
             self.add(sender=COORDINATOR, receiver=None, type_=MessageType.COORDINATOR_OUTPUT,
                      content={"output": reply_text, "errors": list(outcome.errors)}, status=MessageStatus.INVALID,
                      source=reply.source, started_at=started, duration=duration)
-            text = self.d._text.feedback(outcome.errors) + self.reminder(allowed)
+            text = self.text.feedback(outcome.errors) + self.reminder(allowed)
         return _INVALID
 
     def check_brief(self, action: PR.Action) -> PR.Outcome:
@@ -622,8 +626,8 @@ class _Run:
     def reminder(self, allowed: Sequence[str]) -> str:
         if PR.SUMMARY in allowed:
             left = self.d._summary_timeout - (_monotonic() - self.t_summary)
-            return self.d._text.reminder(allowed, self.available(), None, left)
-        return self.d._text.reminder(allowed, self.available(), self.d._max_rounds - self.rounds,
+            return self.text.reminder(allowed, self.available(), None, left)
+        return self.text.reminder(allowed, self.available(), self.d._max_rounds - self.rounds,
                                      self.total_left() if self.t_brief is not None else None)
 
     def add_action(self, action: PR.Action, type_: MessageType, content: Any) -> None:
@@ -648,7 +652,7 @@ class _Run:
 
     def run_dispatch(self) -> tuple[str, list[PR.RoundResult] | None]:
         results: list[PR.RoundResult] | None = None
-        intro = self.d._text.after_brief()
+        intro = self.text.after_brief()
         while True:
             self.check_cancel()
             if self.rounds >= self.d._max_rounds or self.total_left() <= 0:
@@ -660,8 +664,8 @@ class _Run:
             if results is None:
                 text = intro + footer
             else:
-                text = PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit, text=self.d._text,
-                                   forward=self.forward)
+                text = PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit, self.d._budget,
+                                      text=self.text, forward=self.forward)
             action = self.coordinator_action(Phase.DISPATCH, text, allowed)
             if action is _BUDGET:  # results already seen by the coordinator are not sent again
                 return EndReason.BUDGET_EXHAUSTED.value, results if self.budget_unsent else None
@@ -715,10 +719,10 @@ class _Run:
 
     def run_summary(self, reason: str, results: list[PR.RoundResult] | None) -> None:
         self.t_summary = _monotonic()
-        request = self.d._text.summary_request(reason)
+        request = self.text.summary_request(reason)
         footer = request + self.reminder([PR.SUMMARY])
-        text = footer if results is None else PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit, text=self.d._text,
-                                   forward=self.forward)
+        text = footer if results is None else PR.fit_results(self.rounds, results, "", footer, self.d._reply_limit,
+                                                             self.d._budget, text=self.text, forward=self.forward)
         try:
             action = self.coordinator_action(Phase.SUMMARY, text, [PR.SUMMARY])
         except _End as end:
@@ -742,7 +746,7 @@ class _Run:
                            brief: dict[str, Any] | None = None, first: bool | None = None) -> str:
         """The prompt for ``name``; raises ``InvalidPromptError`` when its kind cannot take it (D10)."""
         first = name not in self.introduced if first is None else first
-        text = self.d._text.participant(name, self.brief if brief is None else brief, question, context, first)
+        text = self.text.participant(name, self.brief if brief is None else brief, question, context, first)
         sanitize(K.adapter(self.specs[name].kind), text)
         return text
 

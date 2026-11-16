@@ -33,3 +33,12 @@ claude 去掉了 `api-request*` 与 `attachment` 条目；超过 1500 字符的�
 | `claude/stub-interrupt.jsonl` | 桩：流式回复中 Esc 中断（`[Request interrupted by user]`），下一条用户消息带上该前缀 |
 | `claude/stub-fullauto.jsonl` | 桩：full_auto 下 Write、Bash 成功，AskUserQuestion 不可用 |
 | `cursor/transcript-pong-interrupted.jsonl` | `CURSOR_DATA_DIR/projects/<编码 cwd>/agent-transcripts/<id>/<id>.jsonl`：PONG，以及 Esc 中断后的 `turn_ended` `status: aborted` |
+
+阶段 8（任务 13.14、13.15，2026-11-17）的样本只保留日志适配器用到的条目和字段：codex 只有 message 类的 `response_item` 和 `task_started`/`task_complete` 事件；claude 只有 user、assistant（去掉 thinking 和 usage）和 `turn_duration`；copilot 只有用户消息、助手消息、工具调用、回合起止和 `session.usage_checkpoint`。长 prompt 的原文由 `tests/longprompts.py` 生成，样本里写作 `<LONGPROMPT:…>` 占位符，单元测试加载时还原；“日志里是否逐字记录”由集成用例 `tests/integration/test_agent_capture.py` 在真实 agent 上断言。
+
+| 文件 | 内容 |
+|---|---|
+| `codex/long-prompts.rollout.jsonl` | full_auto：PONG、多步 markdown、242 行（8810 字节）、348 行（63484 字节）四轮，长 prompt 都是一条逐字的用户消息。第一轮之前 codex 没有打开任何 rollout 文件，提交后约 0.3 秒才新建并打开它（13.15）；第一条用户消息是 codex 自己的 `environment_context` |
+| `claude/long-prompts.jsonl` | read_only：同样四轮，长 prompt 逐字记录 |
+| `copilot/long-prompts-readonly.events.jsonl` | read_only：PONG、多步、242 行、20298 字节（低于 copilot 的 20 KiB 粘贴上限）四轮，逐字记录 |
+| `copilot/paste-over-limit-readonly.events.jsonl` | read_only：经 herdr 直接提交（绕过库的上限）的 21 KiB prompt。用户消息是 `<pasted_content file="<会话目录>/files/paste-….txt" size="20.9 KB" lines="…" />`，原文存进会话目录的文件；模型用 view 分段读了文件再回答。超过 20480 字节就是这样（1.0.112 实测边界：20480 字节照常，20481 字节存文件） |

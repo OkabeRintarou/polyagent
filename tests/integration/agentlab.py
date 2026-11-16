@@ -93,6 +93,8 @@ INSTALL_DIRS = [".local/share/cursor-agent/versions", ".local/share/claude/versi
 # Every other difference in ~/.cursor, its auth directory or its install directory fails the test.
 CURSOR_UNISOLATED = [".cursor/sandbox-policies"]
 CURSOR_ALLOWED_CHANGES = (".cursor/ai-tracking", ".cursor/skills-cursor", ".cursor/managed")
+# Every pane: claude must not update the user's install (it ignores the isolated autoUpdates=false).
+NO_SELF_UPDATE = {"DISABLE_AUTOUPDATER": "1"}
 CURSOR_SWITCH = "POLYAGENT_INTEGRATION_CURSOR"  # real cursor runs only with this set to 1 (D17)
 # Where an escape is looked for by name and content after every lab (relative to the home directory),
 # plus the system temporary directory.
@@ -585,13 +587,32 @@ def _toml(v: Any) -> str:
     raise TypeError(type(v))
 
 
-def write_codex_home(d: Path) -> None:
-    """Only the model provider (which may carry its own key header) and the model."""
+_TOML_TO_JSON = "import json,sys,tomllib; sys.stdout.write(json.dumps(tomllib.load(open(sys.argv[1],'rb'))))"
+
+
+def _load_toml(path: Path) -> dict[str, Any]:
+    """``tomllib`` (3.11+); on 3.10 a newer interpreter on PATH converts the file to JSON through a
+    pipe (nothing is printed or written)."""
     try:
         import tomllib
     except ModuleNotFoundError:
-        pytest.skip("reading the codex config needs tomllib (Python 3.11+)")
-    src = tomllib.loads((HOME / ".codex/config.toml").read_text())
+        pass
+    else:
+        return tomllib.loads(path.read_text())
+    for exe in ("python3.13", "python3.12", "python3.11", "python3"):
+        found = shutil.which(exe)
+        if not found:
+            continue
+        out = subprocess.run([found, "-c", _TOML_TO_JSON, str(path)], capture_output=True, text=True, timeout=30,
+                             stdin=subprocess.DEVNULL)
+        if out.returncode == 0:
+            return json.loads(out.stdout)
+    pytest.skip("reading the codex config needs tomllib (Python 3.11+, here or on PATH)")
+
+
+def write_codex_home(d: Path) -> None:
+    """Only the model provider (which may carry its own key header) and the model."""
+    src = _load_toml(HOME / ".codex/config.toml")
     name = src["model_provider"]
     prov = src["model_providers"][name]
     lines = [f"model_provider = {_toml(name)}", f"model = {_toml(src['model'])}", "[tui]",
@@ -799,10 +820,13 @@ class AgentLab:
         self.histfile = self.root / "shell_history"
         env["HISTFILE"] = str(self.histfile)
         env[NONCE_VAR] = self.nonce
+        # claude started its self-update from a lab pane (phase 8: a partial version file appeared in the
+        # user's install directory) although the isolated configuration says autoUpdates=false.
+        env.update(NO_SELF_UPDATE)
         # Any server launch (also a restart by the library) must carry the isolated homes and the nonce.
         self.shim = build_shim(self.root / "shim", self.real_herdr, self.name, self.log, self.refused,
                                server_env={**{k: str(v) for k, v in homes.items()}, NONCE_VAR: self.nonce,
-                                           "HISTFILE": str(self.histfile)})
+                                           "HISTFILE": str(self.histfile), **NO_SELF_UPDATE})
         self.homes = homes
         self.env = env
         self.owns_session = True

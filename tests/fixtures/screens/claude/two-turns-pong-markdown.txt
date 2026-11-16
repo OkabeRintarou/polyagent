@@ -1,0 +1,29 @@
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  <model> · API Usage Billing
+ ▝▝   ▝▝   /tmp/LAB_ROOT/w/claude
+
+⚠ Model "<model>" isn't recognized · context assumed to be 200k tokens · update Claude Code, or see
+  https://code.claude.com/docs/en/model-config
+
+❯ Reply with exactly one word: PONG
+
+  Thought for 4s (ctrl+o to expand)
+
+● PONG
+
+✻ Churned for 4s · done 2:10 AM
+
+❯ Use your file tools to read alpha.txt and beta.txt in the current directory, then answer with a markdown bullet list
+  with one bullet per file, each giving the file name in bold and its number.
+
+  Thought for 5s, read 2 files (ctrl+o to expand)
+
+● - alpha.txt: 41
+  - beta.txt: 17
+
+✻ Brewed for 8s · done 2:10 AM
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on (shift+tab to cycle)

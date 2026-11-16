@@ -17,6 +17,9 @@ from typing import Any, Callable
 from polyagent import herdr as H
 from polyagent.errors import AskCancelledError, HerdrError
 
+# An input box as copilot draws it (task 13.20: its start-up is over only once this is on the screen).
+INPUT_BOX = "─" * 40 + "\n❯ \n" + "─" * 40 + "\n"
+
 
 def herr(code: str, message: str = "boom") -> HerdrError:
     return H.make_error(code, message, ["herdr", "--session", "polyagent", "x"])
@@ -123,7 +126,7 @@ class FakeClient:
 
     def _visible(self) -> str:
         """The current visible screen; it changes when keys are sent (a dialog stays until answered)."""
-        return self.screens[0] if self.screens else "$ "
+        return self.screens[0] if self.screens else "$ \n" + INPUT_BOX
 
     # ---- agents ---------------------------------------------------------------------
     def agent_list(self) -> list[dict[str, Any]]:

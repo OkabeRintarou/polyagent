@@ -10,7 +10,7 @@ from pathlib import Path
 import dataclasses
 import pytest
 
-from fakeclient import FakeClient
+from fakeclient import INPUT_BOX, FakeClient
 from polyagent import agent as A
 from polyagent import kinds as K
 from polyagent import locks
@@ -29,7 +29,7 @@ from polyagent.spec import AgentSpec, ClaudeProvider
 SCREENS = Path(__file__).parent / "fixtures" / "screens"
 TOKEN = "fake-token-0123456789"
 PROVIDER = ClaudeProvider.compatible("https://llm.example.com", auth_token=TOKEN, model="m1")
-READY_SCREEN = "$ agent ready\n"
+READY_SCREEN = "$ agent ready\n" + INPUT_BOX
 
 
 @pytest.fixture
@@ -299,6 +299,29 @@ def test_state_lagging_behind_an_answered_dialog_is_waited_out(pa, client, tmp_p
     client.on_keys = on_keys
     agent = pa.start(AgentSpec(kind="copilot"), tmp_path)
     assert agent.status() == "idle" and len(client.args_of("agent_send_keys")) == 1
+
+
+def test_copilot_trust_dialog_drawn_after_idle_is_still_answered(pa, client, tmp_path, quick_dialogs):
+    """Task 13.20: herdr reports copilot `idle` while its screen shows neither its input box nor the
+    trust dialog yet; the dialog appears only then (seen in phase 8, the first prompt went into it).
+    Start waits for the input box, so the late dialog is answered by start."""
+    banner = "Copilot v1.0.112\n ● Disabled tools: bash, create\n"
+    client.screens = [screen("copilot/trust-dialog.txt"), READY_SCREEN]
+    reads = iter([banner, banner])
+    client._visible = lambda: next(reads, None) or FakeClient._visible(client)
+    agent = pa.start(AgentSpec(kind="copilot"), tmp_path)
+    assert [k for _, *k in client.args_of("agent_send_keys")] == [["enter"]]
+    assert agent.status() == "idle"
+
+
+def test_copilot_never_showing_its_input_box_is_a_start_timeout(pa, client, tmp_path, quick_dialogs, monkeypatch):
+    from polyagent import _launch as L
+
+    monkeypatch.setattr(L, "DIALOG_WAIT_MS", 200)
+    client.screens = ["Copilot v1.0.112\n"]
+    with pytest.raises(AgentTimeoutError, match="input area"):
+        pa.start(AgentSpec(kind="copilot"), tmp_path)
+    assert client.workspaces == {}
 
 
 def test_caller_disabled_auto_trust(pa, client, tmp_path):

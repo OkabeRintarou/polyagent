@@ -115,6 +115,18 @@ def test_oversized_prompt_is_refused(policy, lock_home):
     assert PR.sanitize(K.adapter("claude"), "x" * (PR.MAX_PROMPT_BYTES - 64))
 
 
+def test_copilot_takes_at_most_20_kib():
+    """Task 13.14: copilot turns a paste of more than 20480 bytes into a file reference, so such a prompt
+    is refused before anything is sent; the limit applies to the text as sent (guide line included)."""
+    a = K.adapter("copilot")
+    assert PR.sanitize(a, "x" * 20480)
+    for text in ("x" * 20481, "é" * 10241, "/" + "x" * (20480 - len(K.GUIDE_LINE_TEXT) - 1)):
+        with pytest.raises(InvalidPromptError, match="20480 bytes"):
+            PR.sanitize(a, text)
+    assert PR.sanitize(a, "/" + "x" * (PR.max_text_bytes(a) - 1))
+    assert PR.sanitize(K.adapter("claude"), "x" * 20481)  # other kinds keep the library-wide limit
+
+
 @pytest.mark.parametrize("text", ["", "   ", "\n\t"])
 def test_empty_prompt_is_refused(text):
     with pytest.raises(InvalidPromptError):

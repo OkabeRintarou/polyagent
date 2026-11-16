@@ -269,6 +269,7 @@ def handle_dialogs(client: H.HerdrClient, name: str, pane_id: str, spec: AgentSp
     done (AgentTimeoutError otherwise): having answered a dialog does not replace that check."""
     answered: set[str] = set()
     waited = False
+    ready_by: float | None = None
     while True:
         screen = client.pane_read(pane_id, "visible")
         dialog = match_dialog(adapter, screen)
@@ -277,7 +278,15 @@ def handle_dialogs(client: H.HerdrClient, name: str, pane_id: str, spec: AgentSp
             if state == "blocked":
                 raise AgentBlockedError(f"agent {name} stopped at an unknown start-up dialog", screen, name)
             if state in READY:
-                return
+                if adapter.ready_screen is None or adapter.ready_screen.search(screen):
+                    return
+                # herdr's `idle` means nothing for this kind (D11): copilot was seen showing its trust
+                # dialog only after that (task 13.20). Ready is its input area on the screen.
+                ready_by = ready_by if ready_by is not None else time.monotonic() + DIALOG_WAIT_MS / 1000
+                if time.monotonic() >= ready_by:
+                    raise AgentTimeoutError(f"agent {name} did not show its input area", status=state)
+                time.sleep(DIALOG_POLL)
+                continue
             if waited:
                 raise AgentTimeoutError(f"agent {name} did not become ready", status=state)
             waited = True

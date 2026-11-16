@@ -19,3 +19,10 @@
 | `cursor/websearch-rejected-after-esc.txt` | 拒绝后该轮继续并给出总结 | — |
 | `cursor/slash-quit-on-second-line.txt` | 引导行之后第二行的 `/quit` 被执行（“Session ended.”） | — |
 | `cursor/first-prompt-before.txt`、`cursor/first-prompt-pong-after.txt` | 阶段 5 的真实屏幕（`recent-unwrapped`）：第一次提问前输入行是 `→ Plan, search, build anything`，提问后变成 `→ Add a follow-up`；两者都是页脚标记 | — |
+| `claude/two-turns-pong-markdown.txt` | 阶段 8（13.16）：read_only claude 两轮之后（`recent-unwrapped`）。回显是 `❯ <prompt>`，与输入行同一个前缀；思考行 `Thought for Ns (ctrl+o to expand)`；回复以 `● ` 开头、markdown 已渲染；每轮之后一行 `✻ <动词> for Ns · done <时刻>`；页脚是两条 `─` 横线夹着 `❯ ` 输入行，下面是状态行 | — |
+| `claude/long-prompt-echo-tail.txt` | 242 行 prompt 的回显末尾、回复和页脚；输入框下方提示 `paste again to expand` | — |
+| `copilot/first-turn-pong.txt` | 阶段 8（13.16）：read_only copilot 第一轮之后。回显是 ` ❯ <prompt>`，行尾带时刻；第一轮之后才打印的启动通知（`● MCP Servers reloaded…`、`● Disabled tools…`）出现在回显和回复之间；思考块 `⌄ Thought for Ns` 加 `│ ` 行；回复 `● PONG`；页脚是工作目录行、两条 `─` 横线夹着 `❯` 输入行、状态行 | — |
+| `copilot/long-prompt-echo-tail.txt` | 242 行 prompt 之后；屏幕右缘有一列滚动条字符 `┃` | — |
+| `codex/first-turn-pong-then-markdown.txt` | 阶段 8（13.15）：full_auto codex 前两轮。第一轮的回显 `› <prompt>` 与输入行同一个前缀；回复 `• `；`Worked for Ns • <时刻>`；输入行 `› Ask Codex to do anything` 之后只有一条状态行 | — |
+| `codex/phase2-echo-prefix-reconnecting.txt` | 阶段 2 的真实屏幕（13.31 入库，去掉了环境信息和命令行）：回显 `› Reply with exactly PONG.` 带输入行前缀；网络失败，没有回复；输入行之后只有一条状态行 | — |
+| `codex/model-picker-dialog.txt` | 阶段 8（13.31）：`/model` 打开的选择对话框。光标行 `› 4. …` 是编号选项，最后一行是按键提示 `enter select · esc back`；按 D12 的四个条件不被认作输入区，Esc 之后屏幕回到可识别的输入区 | Esc 关闭 |

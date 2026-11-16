@@ -1,0 +1,17 @@
+  >_ OpenAI Codex (v0.167.0)
+     /tmp/LAB_ROOT/repo
+  permissions: YOLO mode
+
+  Tip: Maximize usage with GPT-6.1 Sol. Try it on complex work for near-Astra performance at a lower cost.
+
+
+› Reply with exactly PONG.
+
+
+• Reconnecting... waiting for network (49s • esc to interrupt)
+  └ Connection failed: error sending request
+
+
+› Ask Codex to do anything
+
+  <model> default · /tmp/LAB_ROOT/repo · ← for agents                      ⚠ 1 warning · f2 to view

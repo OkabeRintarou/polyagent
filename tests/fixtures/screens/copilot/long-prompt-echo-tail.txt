@@ -1,0 +1,22 @@
+   filler line 237: nothing to do here                                                                                ┃
+   filler line 238: nothing to do here                                                                                ┃
+   filler line 239: nothing to do here                                                                                ┃
+   filler line 240: nothing to do here                                                                                ┃
+   End of the test message. Reply with exactly one word: LONGLINES                                                    ┃
+                                                                                                                      ┃
+ ⌄ Thought for 1s                                                                                                     ┃
+ │ The user is asking me to ignore the numbered filler lines and reply with exactly one word: LONGLINES               ┃
+ │                                                                                                                    ┃
+ │ They say "End of the test message. Reply with exactly one word: LONGLINES"                                         ┃
+ │                                                                                                                    ┃
+ │ So my response should be:                                                                                          ┃
+ │                                                                                                                    ┃
+ │ LONGLINES                                                                                                          ┃
+                                                                                                                      ┃
+ ● LONGLINES                                                                                                          ┃
+                                                                                                                      ┃
+ /tmp/LAB_ROOT/w/copilot                                                 Session: 1.38 AIC used
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ← open sidebar · Interactive · Manual Approval · / commands · ? help · tab next tab                  Claude Haiku 4.5

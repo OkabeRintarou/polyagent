@@ -786,11 +786,22 @@ def test_unverified_screen_capture_is_never_used(tmp_path, kind):
 def test_codex_without_its_log_uses_the_screen(tmp_path):
     """codex has screen samples: an unbound rollout (task 13.15) falls back to the screen."""
     c, agent, _ = make(tmp_path, kind="codex", log=False)
-    c.recent = "older output\n\n› Ask Codex to do anything\n"
+    footer = "› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
+    c.recent = "older output\n\n" + footer
     c.on_prompt = lambda fake, name, text, wait: setattr(
-        fake, "recent", f"older output\n\n{text}\n\n• PONG\n\n› Ask Codex to do anything\n")
+        fake, "recent", f"older output\n\n› {text}\n\n• PONG\n\n{footer}")
     r = agent.ask_reply("hello", 5)
     assert (r.text, r.source) == ("PONG", "screen")
+
+
+def test_codex_dialog_is_not_an_input_area(tmp_path):
+    """Scenario: 对话框不是输入区 (task 13.31) — codex at its trust dialog: nothing is submitted."""
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = (Path(__file__).parent / "fixtures/screens/codex/trust-dialog.txt").read_text()
+    c.on_prompt = lambda fake, name, text, wait: None
+    with pytest.raises(AgentBusyError, match="recognizable input state"):
+        agent.ask("What is the answer?", 2)
+    assert not c.args_of("agent_prompt")
 
 
 def test_no_baseline_read_when_the_log_file_exists(tmp_path):

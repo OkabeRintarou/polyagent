@@ -78,6 +78,9 @@ GUIDE_LINE = "guide_line"
 LEADING_SPACE = "leading_space"
 GUIDE_LINE_TEXT = "Message from the user follows:"
 GUARDED_PREFIXES = frozenset("/!#@$?-")
+# copilot 1.0.112 keeps a paste of more than 20 KiB (UTF-8) out of the message: it is saved to a file
+# and the message is `<pasted_content file=… />` (task 13.14, tests/fixtures/logs/copilot).
+COPILOT_PASTE_LIMIT = 20 * 1024
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,10 @@ class PromptGuard:
     # when no guard works (verified).
     rejected: Mapping[str, str | None]
     multiline: bool
+    # Largest prompt (UTF-8 bytes, after the guard) the kind takes as message text; None: only the
+    # library-wide limit. Task 13.14: copilot saves a longer paste to a file and the message becomes a
+    # reference to it, so the model never sees the text.
+    max_bytes: int | None = None
 
 
 # ---- screen footer (D12 "内容区和页脚") ----------------------------------------------------
@@ -103,6 +110,11 @@ class FooterBlock:
     input_line: re.Pattern[str]
     status: tuple[re.Pattern[str], ...] = ()
     max_after: int = 4
+    min_after: int = 0
+    # The input line must not match this (codex: a numbered option of a selection dialog, D12).
+    input_exclude: re.Pattern[str] | None = None
+    # No line after the input line may match this (codex: a dialog's key hints `enter`/`esc`, D12).
+    after_exclude: re.Pattern[str] | None = None
 
 
 # ---- read_only extra-argument whitelist (D8) ------------------------------------------
@@ -168,6 +180,9 @@ class KindAdapter:
     # content), or a bottom footer block, which replaces the markers when given.
     footer: tuple[re.Pattern[str], ...] = ()
     footer_block: FooterBlock | None = None
+    # The visible screen of an agent ready for input. Where herdr's status is not reliable (D11) the
+    # start-up dialog handling waits for it before taking `idle` as ready (task 13.20).
+    ready_screen: re.Pattern[str] | None = None
     trust_by_flag: bool = False  # cursor: `--trust` instead of a dialog (persisted, D9)
     secret_env_flag: str | None = None  # hides injected variable names from tools under read_only
     notes: tuple[str, ...] = field(default=())
@@ -347,8 +362,10 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("trust", TRUST, "Confirm folder trust", "Do you trust the files in this folder?", "1. Yes",
                     "2. Yes, and remember this folder", "3. No", keys=("enter",), persisted=False),
         ),
-        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}, multiline=True),
+        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}, multiline=True, max_bytes=COPILOT_PASTE_LIMIT),
         status_trusted=False,
+        # Its input box: a `❯` line between two rules, all at column 0 (dialog boxes are drawn with `│`).
+        ready_screen=re.compile(r"(?m)^─{20,}[ \t]*\n❯[^\n]*\n─{20,}[ \t]*$"),
         deny_key="esc",
         interrupt_key="esc",
         log_binding="session_id",
@@ -404,8 +421,12 @@ ADAPTERS: dict[str, KindAdapter] = {
         interrupt_key="esc",
         log_binding="rollout_fd",
         # codex shows submitted prompts in the transcript as `› <prompt>` too (phase-2 screen, phase-7
-        # finding), so its input line is the *last* `›` line: a bottom block without a status marker.
-        footer_block=FooterBlock(re.compile(r"^\s*›(?: |\s*$)")),
+        # finding), and its selection dialogs use `›` as their cursor. D12 (task 13.31): the last `›` line,
+        # not a numbered option, followed by exactly one non-blank line: the status line, with ` · `
+        # separated fields and no `enter`/`esc` key hint.
+        footer_block=FooterBlock(re.compile(r"^\s*›(?: |\s*$)"), status=(re.compile(r" · "),), max_after=1,
+                                 min_after=1, input_exclude=re.compile(r"^\s*›\s*\d+\."),
+                                 after_exclude=re.compile(r"(?i)\b(?:enter|esc)\b")),
     ),
     "cursor": KindAdapter(
         kind="cursor",

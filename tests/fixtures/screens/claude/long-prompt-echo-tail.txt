@@ -1,0 +1,16 @@
+  filler line 237: nothing to do here
+  filler line 238: nothing to do here
+  filler line 239: nothing to do here
+  filler line 240: nothing to do here
+  End of the test message. Reply with exactly one word: LONGLINES
+
+  Thought for 1s (ctrl+o to expand)
+
+● LONGLINES
+
+✻ Cooked for 2s · done 2:10 AM
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  paste again to expand

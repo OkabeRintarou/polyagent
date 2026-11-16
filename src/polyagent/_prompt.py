@@ -51,6 +51,21 @@ def sanitize(adapter: K.KindAdapter, text: object) -> str:
             text = " " + text
         else:  # pragma: no cover - table invariant
             raise AssertionError(guard.method)
-    if len(text.encode("utf-8")) > MAX_PROMPT_BYTES:
-        raise InvalidPromptError(f"the prompt is longer than {MAX_PROMPT_BYTES} bytes (UTF-8)")
+    limit = max_bytes(adapter)
+    if len(text.encode("utf-8")) > limit:
+        why = "" if guard.max_bytes is None else f"; {adapter.kind} does not take a longer prompt as message text"
+        raise InvalidPromptError(f"the prompt is longer than {limit} bytes (UTF-8){why}")
     return text
+
+
+def max_bytes(adapter: K.KindAdapter) -> int:
+    """The largest prompt ``adapter``'s kind takes, in UTF-8 bytes after the guard (D10 step 5)."""
+    kind_limit = adapter.prompt_guard.max_bytes
+    return MAX_PROMPT_BYTES if kind_limit is None else min(MAX_PROMPT_BYTES, kind_limit)
+
+
+def max_text_bytes(adapter: K.KindAdapter) -> int:
+    """The largest text that fits :func:`max_bytes` whatever guard it gets."""
+    guard = adapter.prompt_guard
+    reserve = len(K.GUIDE_LINE_TEXT.encode("utf-8")) + 1 if guard.method == K.GUIDE_LINE else 1
+    return max_bytes(adapter) - reserve

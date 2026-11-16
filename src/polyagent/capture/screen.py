@@ -34,10 +34,14 @@ class ScreenCapture:
         idx = next((i for i in range(len(lines) - 1, -1, -1) if b.input_line.search(lines[i])), None)
         if idx is None:
             return None
+        if b.input_exclude is not None and b.input_exclude.search(lines[idx]):
+            return None
         after = [line for line in lines[idx + 1:] if line.strip()]
-        if len(after) > b.max_after:
+        if not b.min_after <= len(after) <= b.max_after:
             return None
         if b.status and not any(m.search(line) for line in after for m in b.status):
+            return None
+        if b.after_exclude is not None and any(b.after_exclude.search(line) for line in after):
             return None
         return idx
 

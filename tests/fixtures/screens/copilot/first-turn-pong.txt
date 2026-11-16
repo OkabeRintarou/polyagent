@@ -1,0 +1,35 @@
+│  ╰─╯╰─╯  Copilot v1.0.112 uses AI.  │  Use the tabs above to explore your sessions and pull requests              │
+│  █ ▘▝ █  Check for mistakes.        │  /model — Switch models across providers, or use Copilot Fusion             │
+│   ▔▔▔▔                              │                                                                             │
+│                                                                                                                   │
+╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+ ❯ Reply with exactly one word: PONG                                                                            02:17
+
+ ● MCP Servers reloaded: 0 servers connected
+
+ ● Disabled tools: bash, create, dynamic_workflows_manage, edit, fetch_copilot_cli_documentation, image_generation,
+   list_agents, list_bash, read_agent, read_bash, run_dynamic_workflow, semantic_code_search, session_store_sql,
+   skill, sql, stop_bash, store_memory, task, vote_memory, web_fetch, write_agent
+
+ ⌄ Thought for 1s
+ │ The user is asking me to reply with exactly one word: "PONG". This is a simple request. I should respond with just
+ │ that word.
+
+ ● PONG
+
+
+
+
+
+
+
+
+
+
+
+ /tmp/LAB_ROOT/w/copilot                                                 Session: 0.66 AIC used
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ← open sidebar · Interactive · Manual Approval · / commands · ? help · tab next tab                  Claude Haiku 4.5

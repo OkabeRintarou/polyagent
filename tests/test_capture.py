@@ -535,3 +535,138 @@ def test_samples_show_a_recognized_input_area(rel):
     kind = rel.split("/")[0]
     a = K.adapter(kind)
     assert ScreenCapture(a.footer, a.footer_block).recognized((SCREENS / rel).read_text())
+
+
+# ---- task 13.14: long prompts in real session logs; 13.16: screens of claude and copilot ----------
+
+
+def _restored(tmp_path, rel):
+    """A phase-8 sample with its generated long prompts put back (they are stored as placeholders)."""
+    from longprompts import big, many_lines
+
+    prompts = {"<LONGPROMPT:many_lines:LONGLINES>": many_lines("LONGLINES"), "<LONGPROMPT:big:LONGBIG>": big("LONGBIG"),
+               "<LONGPROMPT:big:LONGEDGE:20480>": big("LONGEDGE", 20480)}
+    out = []
+    for line in lines(rel):
+        e = json.loads(line)
+
+        def put(v):
+            if isinstance(v, str):
+                return prompts.get(v, v)
+            if isinstance(v, list):
+                return [put(x) for x in v]
+            return {k: put(x) for k, x in v.items()} if isinstance(v, dict) else v
+
+        out.append(json.dumps(put(e), ensure_ascii=False) + "\n")
+    p = tmp_path / Path(rel).name
+    p.write_text("".join(out))
+    return p
+
+
+@pytest.mark.parametrize("kind,rel,cls,longest", [
+    ("codex", "codex/long-prompts.rollout.jsonl", CodexLog, ("LONGBIG", None)),
+    ("claude", "claude/long-prompts.jsonl", ClaudeLog, ("LONGBIG", None)),
+    ("copilot", "copilot/long-prompts-readonly.events.jsonl", CopilotLog, ("LONGEDGE", 20480)),
+])
+def test_long_multiline_prompts_are_matched_in_real_logs(tmp_path, kind, rel, cls, longest):
+    """Task 13.14: a prompt of 242 lines and one of 62 KiB (copilot: just under 20 KiB) are each one user
+    message, recorded as sent; the adapter finds this prompt's turn and its reply."""
+    from longprompts import big, many_lines
+    from polyagent._prompt import sanitize
+
+    log = cls(str(_restored(tmp_path, rel)))
+    token, size = longest
+    for text, reply in [("Reply with exactly one word: PONG", "PONG"), (many_lines("LONGLINES"), "LONGLINES"),
+                        (big(token) if size is None else big(token, size), token)]:
+        j = log.judge(0, prompt_digest(sanitize(K.adapter(kind), text)))
+        assert j.outcome is Outcome.REPLY and reply in j.text, (text[:40], j)
+
+
+def test_copilot_saves_a_paste_over_its_limit_to_a_file(tmp_path):
+    """Task 13.14: over 20 KiB copilot logs a file reference, not the prompt (the model may read the file
+    with a tool, or not): the prompt is never seen, so the library refuses such prompts before sending."""
+    from longprompts import big
+
+    rel = "copilot/paste-over-limit-readonly.events.jsonl"
+    text = big("LONGPASTE", K.COPILOT_PASTE_LIMIT + 1024)
+    log = CopilotLog(str(copy(tmp_path, rel)))
+    assert log.judge(0, prompt_digest(text)).outcome is Outcome.NOT_SEEN
+    users = [json.loads(x)["data"]["content"] for x in lines(rel) if json.loads(x)["type"] == "user.message"]
+    assert len(users) == 1 and users[0].startswith("<pasted_content file=") and 'lines="' in users[0]
+    assert any(json.loads(x)["type"] == "session.usage_checkpoint" for x in lines(rel))  # the turn did end
+
+
+def test_codex_first_turn_screen_sample_gives_the_reply():
+    """Task 13.15: codex's first turn is taken from the screen (its rollout is opened only after the
+    first message); a real screen after two turns, the echo carrying the input-line prefix."""
+    screen = (SCREENS / "codex/first-turn-pong-then-markdown.txt").read_text()
+    cap = ScreenCapture(K.adapter("codex").footer, K.adapter("codex").footer_block)
+    assert cap.recognized(screen)
+    assert cap.extract(screen, [], ["Reply with exactly one word: PONG"], count=0).startswith("PONG")
+
+
+@pytest.mark.parametrize("kind,rel,echo", [
+    ("claude", "claude/two-turns-pong-markdown.txt", "Reply with exactly one word: PONG"),
+    ("copilot", "copilot/first-turn-pong.txt", "Reply with exactly one word: PONG"),
+])
+def test_claude_and_copilot_echo_like_their_input_line(kind, rel, echo):
+    """Task 13.16: in both, the echo of a submitted prompt starts with the same `❯` as the input line, and
+    the line markers inferred for them do not give the reply: claude's end the content area at the echo
+    (nothing found); copilot's let start-up notices, thinking lines and the footer's path line through.
+    Their screen capture stays off (unverified) until a footer rule fits these samples (phase-8 finding)."""
+    screen = (SCREENS / rel).read_text()
+    assert any(line.lstrip().startswith(f"❯ {echo}") for line in screen.splitlines())
+    a = K.adapter(kind)
+    assert a.capability(K.SCREEN_CAPTURE).state != K.VERIFIED
+    got = ScreenCapture(a.footer, a.footer_block).extract(screen, [], [echo], count=0)
+    assert got is None or got.strip() != "PONG"
+
+
+# ---- task 13.31: codex's bottom footer block (D12, four conditions) --------------------------------
+
+CODEX_STATUS = "  gpt default · /tmp/repo · ← for agents"
+YES_NO = "  Allow this command?\n\n{first}1. Yes, proceed\n{last}2. No, tell Codex what to do\n\n  Press enter to confirm or esc to cancel\n"
+
+
+@pytest.mark.parametrize("screen", [
+    (SCREENS / "codex/trust-dialog.txt").read_text(),
+    (SCREENS / "codex/model-picker-dialog.txt").read_text(),  # real, phase 8 (`/model`)
+    YES_NO.format(first="› ", last="  "),  # cursor on the first item
+    YES_NO.format(first="  ", last="› "),  # cursor on the last item
+    "  answer\n\n› Ask Codex to do anything\n\n" + CODEX_STATUS + "\n  one more line\n",  # two lines after it
+    "  answer\n\n› Ask Codex to do anything\n\n  gpt default   /tmp/repo\n",  # status without ` · `
+    "  Pick one\n› 1. first · option\n  2. second\n",  # input line is a numbered option
+    "  Choose · a model\n› gpt\n  enter select · esc back\n",  # key hints in the line after it
+])
+def test_codex_screens_that_are_not_its_input_area(screen):
+    """Scenario: 对话框不是输入区 — the dialog samples and footer shapes D12 does not accept."""
+    assert not CODEX_CAP.recognized(screen)
+    assert CODEX_CAP.extract(screen, [], ["Ask Codex to do anything"], count=0) is None
+
+
+@pytest.mark.parametrize("rel", ["cursor/trust-dialog.txt", "cursor/websearch-approval-dialog.txt"])
+def test_cursor_dialog_samples_are_not_its_input_area(rel):
+    assert not CURSOR_CAP.recognized((SCREENS / rel).read_text())
+
+
+@pytest.mark.parametrize("rel", ["codex/status-after-raw-slash-status.txt", "codex/phase2-echo-prefix-reconnecting.txt",
+                                 "codex/first-turn-pong-then-markdown.txt"])
+def test_real_codex_screens_are_recognized(rel):
+    assert CODEX_CAP.recognized((SCREENS / rel).read_text())
+
+
+def test_real_codex_screen_with_the_echo_prefix_gives_the_reply():
+    screen = (SCREENS / "codex/first-turn-pong-then-markdown.txt").read_text()
+    md = "Use your file tools to read alpha.txt and beta.txt in the current directory, then answer with a markdown"
+    text = CODEX_CAP.extract(screen, [], [md], count=0)
+    assert text is not None and "alpha.txt — 41" in text and "beta.txt — 17" in text and "Ask Codex" not in text
+    phase2 = (SCREENS / "codex/phase2-echo-prefix-reconnecting.txt").read_text()
+    assert CODEX_CAP.echo_seen(phase2, [], ["Reply with exactly PONG."], count=0)
+
+
+def test_codex_reply_with_a_prefixed_line_and_no_input_line_is_not_truncated():
+    """Review C2: the input line scrolled away and the reply has a `› ` line near its end: no text
+    (a cut reply) is returned."""
+    screen = "› the question\n\n• Use it like this:\n› quoted step one\n  quoted step two\n  done.\n"
+    assert not CODEX_CAP.recognized(screen)
+    assert CODEX_CAP.extract(screen, [], ["the question"], count=0) is None
