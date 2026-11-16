@@ -118,7 +118,8 @@ def test_longest_participant_name_gives_a_32_character_agent_name(clock, tmp_pat
     name = "a" * 23
     f, d = setup(clock, tmp_path, [brief(), finish(), summary()], names=(name,))
     rec = d.run("req")
-    assert len(f.calls[1]["name"]) == 32 and f.calls[1]["name"] == f"{name}-{rec.id[:8]}"
+    call = next(c for c in f.calls if c["member"] == name)
+    assert len(call["name"]) == 32 and call["name"] == f"{name}-{rec.id[:8]}"
 
 
 @pytest.mark.parametrize("role", ["", "   ", "a\x1bb", "x" * 2001])
@@ -184,7 +185,8 @@ def test_members_without_policy_start_read_only(clock, tmp_path):
     f, d = setup(clock, tmp_path, [brief(), finish(), summary()])
     rec = d.run("req")
     assert rec.status == "completed"
-    assert [c["member"] for c in f.calls] == ["coordinator", "critic", "builder"]
+    # members start in parallel, so the start order is not defined
+    assert sorted(c["member"] for c in f.calls) == ["builder", "coordinator", "critic"]
     for c in f.calls:
         assert c["spec"].policy == "read_only" and c["default_policy"] == "read_only"
         assert c["discussion_id"] == rec.id and c["name"] == f"{c['member']}-{rec.id[:8]}"
