@@ -42,7 +42,6 @@ import stat
 import subprocess
 import tempfile
 import time
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -517,6 +516,10 @@ def _toml(v: Any) -> str:
 
 def write_codex_home(d: Path) -> None:
     """Only the model provider (which may carry its own key header) and the model."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        pytest.skip("reading the codex config needs tomllib (Python 3.11+)")
     src = tomllib.loads((HOME / ".codex/config.toml").read_text())
     name = src["model_provider"]
     prov = src["model_providers"][name]
