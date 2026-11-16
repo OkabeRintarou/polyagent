@@ -58,6 +58,10 @@ REFUSED = [
     ["--session", NAME, "workspace", "list", "--session", "racer"],
     ["--session", NAME, "workspace", "list", "--session=racer"],
     ["--version", "--session", "racer"],
+    ["--session", NAME, "--json", "session", "stop", "racer"],
+    ["--session", NAME, "--machine", "x", "session", "delete", "default"],
+    ["--session", NAME],
+    ["--session", NAME, "tab", "list"],
 ]
 
 

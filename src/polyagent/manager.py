@@ -41,6 +41,8 @@ PASSTHROUGH_FORBIDDEN_NAMES = frozenset({"BASH_ENV", "ENV", "NODE_OPTIONS"})
 PASSTHROUGH_FORBIDDEN_PREFIXES = ("LD_", "HERDR_")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SERVER_PROBE_INTERVAL = 0.2
+SERVER_EXIT_GRACE = 3.0  # keep probing this long after our server child exited (lost race)
+HINT_LIMIT = 2.0  # upper bound for the `session list` used to build error hints
 SERVER_LOCK_SLACK = 5.0  # extra wait for server.lock beyond the holder's own start timeout
 
 
@@ -199,6 +201,7 @@ class PolyAgent:
         H.check_version(binary)
         self._herdr = H.HerdrClient(self._session, binary)
         self._server_mutex = threading.Lock()
+        self._probe_unresponsive = False
         self.ensure_server()
 
     @property
@@ -245,6 +248,8 @@ class PolyAgent:
             raise H.launch_error(e, argv) from e
         threading.Thread(target=proc.wait, name=f"herdr-server-reaper-{proc.pid}", daemon=True).start()
         deadline = time.monotonic() + self._server_start_timeout
+        exited_at: float | None = None
+        self._probe_unresponsive = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -253,14 +258,18 @@ class PolyAgent:
             if self._probe(max(0.1, min(H.PROBE_LIMIT, deadline - time.monotonic()))):
                 return
             code = proc.poll()
-            if code is not None:
-                # Lost a race against another server ("already running") is fine if it answers.
-                if self._probe(max(0.1, min(H.PROBE_LIMIT, deadline - time.monotonic()))):
-                    return
+            if code is None:
+                continue
+            # Our child exited. It may have lost a race against a server started outside polyagent
+            # ("already running") that does not answer yet, so keep probing for a short grace period.
+            now = time.monotonic()
+            if exited_at is None:
+                exited_at = now
+            if now - exited_at >= SERVER_EXIT_GRACE:
                 raise HerdrUnavailableError(
                     H.SERVER_START_FAILED,
-                    f"herdr server for session {self._session!r} exited with status {code} before it became "
-                    f"available; {self._server_log_hint()}",
+                    f"herdr server for session {self._session!r} exited with status {code} and no server "
+                    f"answered within {SERVER_EXIT_GRACE:g}s; {self._server_log_hint()}",
                     argv,
                 )
         raise HerdrUnavailableError(
@@ -275,17 +284,21 @@ class PolyAgent:
             return self._herdr.is_running(limit=limit)
         except HerdrUnavailableError as e:
             if e.code == H.UNRESPONSIVE:
+                self._probe_unresponsive = True
                 return False
             raise
 
     def _server_log_hint(self) -> str:
+        generic = "see herdr-server.log in the session directory reported by `herdr session list --json`"
+        if self._probe_unresponsive:  # the CLI itself hangs; do not wait on it again
+            return generic
         try:
-            for s in self._herdr.session_list():
+            for s in self._herdr.session_list(limit=HINT_LIMIT):
                 if s.get("name") == self._session and isinstance(s.get("session_dir"), str):
                     return f"see {os.path.join(s['session_dir'], 'herdr-server.log')}"
         except PolyAgentError:
             pass
-        return "see herdr-server.log in the session directory reported by `herdr session list --json`"
+        return generic
 
     def _with_server(self, fn: Callable[[], T]) -> T:
         """Run an entry operation; on ``server_not_running`` start the server once and retry."""
@@ -345,7 +358,14 @@ class PolyAgent:
             validate_discussion_id(discussion_id)
         cutoff = _to_unix(older_than)
         filtered = cutoff is not None or discussion_id is not None
-        return self._with_server(lambda: self._cleanup(filtered, cutoff, discussion_id))
+        try:
+            return self._cleanup(filtered, cutoff, discussion_id)
+        except HerdrUnavailableError as e:
+            if e.code != H.SERVER_NOT_RUNNING:
+                raise
+            first: list[str] = list(getattr(e, "closed", []))
+        self.ensure_server()
+        return first + self._cleanup(filtered, cutoff, discussion_id)
 
     def _cleanup(self, filtered: bool, cutoff: float | None, discussion_id: str | None) -> list[str]:
         closed: list[str] = []
@@ -367,6 +387,13 @@ class PolyAgent:
                         continue
                     with lock:
                         done = self._close_if_marked(ow, require_orphan=True)
+            except HerdrUnavailableError as e:
+                if e.code == H.SERVER_NOT_RUNNING:  # nothing else can succeed now; stop and report progress
+                    e.closed = closed  # type: ignore[attr-defined]
+                    raise
+                log.warning("cleanup: closing workspace %s (agent %s) failed: %s", ow.workspace_id, m.name, e)
+                errors.append(e)
+                continue
             except PolyAgentError as e:
                 log.warning("cleanup: closing workspace %s (agent %s) failed: %s", ow.workspace_id, m.name, e)
                 errors.append(e)

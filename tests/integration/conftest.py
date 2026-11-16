@@ -6,6 +6,7 @@ Every herdr invocation from the library goes through a guarding shim (``shim.py`
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import secrets
@@ -114,8 +115,12 @@ def temp_session(tmp_path, monkeypatch):
         yield ts
     finally:
         ts.herdr("session", "stop", name, "--json")
-        for pid in ts.server_pids():  # fallback; cmdline verified above
-            os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 5
+        while ts.server_pids() and time.monotonic() < deadline:  # let it exit on its own first
+            time.sleep(0.1)
+        for pid in ts.server_pids():  # fallback; cmdline verified by server_pids()
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGTERM)
         deadline = time.monotonic() + 5
         while ts.server_pids() and time.monotonic() < deadline:
             time.sleep(0.1)

@@ -327,3 +327,31 @@ def test_pane_run_command_redacted_on_timeout(client, fake):
     with pytest.raises(HerdrUnavailableError) as ei:
         client.call("pane", "run", "w1:p1", "export TOKEN=abc123", limit=0.1)
     assert "export TOKEN=abc123" not in ei.value.argv
+
+
+# ---- N4: positional redaction ----
+
+
+def test_short_prompt_withholds_usage_message_but_keeps_target(client, fake):
+    fake.handler = lambda argv: Resp(2, "", "error: unexpected argument 'e' found")
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("e", "e", 1000)
+    e = ei.value
+    assert e.argv[3:6] == ["agent", "prompt", "e"]  # the target keeps its name
+    assert e.argv[6] == "<1 chars redacted>"
+    assert "withheld" in e.message and "<1 chars redacted>rror" not in e.message
+
+
+def test_short_prompt_does_not_mangle_json_errors(client, fake):
+    fake.handler = lambda argv: err("agent_not_found", "agent target e not found")
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("e", "e", 1000)
+    assert ei.value.message == "agent target e not found"
+
+
+def test_bad_response_redacts_long_prompt(client, fake):
+    secret = "a long prompt with sk-SECRET-123"
+    fake.handler = lambda argv: Resp(0, f"garbage {secret}")
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("rev", secret, 1000)
+    assert ei.value.code == "bad_response" and secret not in ei.value.message

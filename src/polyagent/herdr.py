@@ -174,9 +174,9 @@ class HerdrClient:
                 return False
             raise
 
-    def session_list(self) -> list[dict[str, Any]]:
+    def session_list(self, limit: float = CALL_LIMIT) -> list[dict[str, Any]]:
         args = ("session", "list", "--json")
-        return _dicts(self._get(self.call(*args), "sessions", list, args), self.argv(args))
+        return _dicts(self._get(self.call(*args, limit=limit), "sessions", list, args), self.argv(args))
 
     def session_stop(self) -> dict[str, Any]:
         return self.call("session", "stop", self._session, "--json")
@@ -314,29 +314,47 @@ def _dicts(items: list[Any], argv: list[str]) -> list[dict[str, Any]]:
 
 def _bad_response(raw: str, argv: list[str], why: str = "") -> HerdrError:
     detail = f"{why}: " if why else ""
-    return HerdrError(BAD_RESPONSE, detail + (raw or "").strip()[:500], redact_argv(argv))
+    return HerdrError(BAD_RESPONSE, _redact_text(detail + (raw or "").strip()[:500], argv), redact_argv(argv))
 
 
 # Text-bearing positional arguments (index into the args after `--session S`) that must not be
 # kept on exception objects: the prompt of `agent prompt` and the command of `pane run`.
 _SENSITIVE_ARGS = {("agent", "prompt"): 3, ("pane", "run"): 3}
+MIN_REDACT_IN_TEXT = 8  # shorter values are not searched for inside messages (they would mangle them)
 
 
-def _sensitive_values(argv: list[str]) -> list[str]:
-    args = argv[3:] if argv[1:2] == ["--session"] else argv[1:]
+def _sensitive_index(argv: list[str]) -> int | None:
+    """Absolute index in ``argv`` of the prompt/command argument, if any."""
+    base = 3 if argv[1:2] == ["--session"] else 1
+    args = argv[base:]
     idx = _SENSITIVE_ARGS.get(tuple(args[:2]))  # type: ignore[arg-type]
-    return [args[idx]] if idx is not None and len(args) > idx else []
+    return base + idx if idx is not None and len(args) > idx else None
+
+
+def _placeholder(value: str) -> str:
+    return f"<{len(value)} chars redacted>"
 
 
 def redact_argv(argv: list[str]) -> list[str]:
-    secret = set(_sensitive_values(argv))
-    return [f"<{len(a)} chars redacted>" if a in secret else a for a in argv]
+    out = list(argv)
+    i = _sensitive_index(out)
+    if i is not None:
+        out[i] = _placeholder(out[i])
+    return out
 
 
-def _redact_text(text: str, argv: list[str]) -> str:
-    for value in _sensitive_values(argv):
-        if value:
-            text = text.replace(value, f"<{len(value)} chars redacted>")
+def _redact_text(text: str, argv: list[str], echo_risk: bool = True) -> str:
+    """Hide the prompt/command inside ``text``. Long values are replaced where they occur; for short
+    ones a substring search would mangle the message, so a message that may echo arguments
+    (``echo_risk``: usage/unknown errors, raw output) is withheld instead."""
+    i = _sensitive_index(argv)
+    if i is None or not argv[i]:
+        return text
+    value = argv[i]
+    if len(value) >= MIN_REDACT_IN_TEXT:
+        return text.replace(value, _placeholder(value))
+    if echo_risk and value in text:
+        return "herdr rejected the arguments (message withheld: it may echo the prompt or command)"
     return text
 
 
@@ -417,7 +435,7 @@ def make_error(code: str, message: str, argv: list[str]) -> HerdrError:
             "stop this session's server and let polyagent start it again)"
         )
     cls = HerdrUnavailableError if code in UNAVAILABLE_CODES else HerdrError
-    return cls(code, _redact_text(message, argv), redact_argv(argv))
+    return cls(code, _redact_text(message, argv, echo_risk=code in (USAGE, UNKNOWN)), redact_argv(argv))
 
 
 def parse_error(proc: subprocess.CompletedProcess[str], argv: list[str]) -> HerdrError:

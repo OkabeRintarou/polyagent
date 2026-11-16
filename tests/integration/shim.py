@@ -4,7 +4,8 @@ The shim is placed first on ``PATH`` and also passed as ``herdr_path``. It recor
 invocation and refuses (without running the real herdr) any call that is not strictly scoped to
 the temporary session:
 
-* the first two arguments must be ``--session <temp>`` (only a lone ``--version`` is exempt);
+* the first two arguments must be ``--session <temp>`` (only a lone ``--version`` is exempt), and the
+  third must be a known subcommand (an option there could hide a ``session stop <other>``);
 * no further ``--session`` / ``--session=...`` before ``--``;
 * ``session`` subcommands: only ``list``, or ``stop``/``delete`` whose target is ``<temp>``;
 * no inherited ``HERDR_*`` variable other than ``HERDR_CONFIG_PATH`` in the environment.
@@ -17,6 +18,7 @@ from __future__ import annotations
 import shlex
 from pathlib import Path
 
+KNOWN_SUBCOMMANDS = ("workspace", "pane", "agent", "session", "server")
 ARG_SEP = "\x1f"
 REC_SEP = "\x1e"
 
@@ -38,6 +40,10 @@ done
 if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exec "$REAL" --version; fi
 if [ "$1" != "--session" ] || [ "$2" != "$NAME" ]; then refuse "not scoped to the temp session"; fi
 args=("${@:3}")
+case "${args[0]}" in
+  workspace|pane|agent|session|server) ;;
+  *) refuse "first argument after --session must be a known subcommand" ;;
+esac
 for a in "${args[@]}"; do
   [ "$a" = "--" ] && break
   case "$a" in --session|--session=*) refuse "repeated --session" ;; esac
@@ -84,6 +90,8 @@ def is_scoped(argv: list[str], name: str) -> bool:
     if argv[:2] != ["--session", name]:
         return False
     args = argv[2:]
+    if not args or args[0] not in KNOWN_SUBCOMMANDS:
+        return False
     for a in args:
         if a == "--":
             break

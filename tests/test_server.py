@@ -111,15 +111,16 @@ def test_lock_wait_timeout_rechecks_server(fake, monkeypatch):
     assert server_spawns(fake) == []
 
 
-def test_server_exiting_at_once_fails_fast_with_status(fake):
+def test_server_exiting_at_once_fails_fast_with_status(fake, monkeypatch):
     """C7: no need to wait the full start timeout when the server process is already gone."""
+    monkeypatch.setattr(M, "SERVER_EXIT_GRACE", 0.4)
     fake.running = False
     fake.server_starts = False
     fake.server_exit = 1
     t0 = time.monotonic()
     with pytest.raises(HerdrUnavailableError) as ei:
         PolyAgent(server_start_timeout=10)
-    assert time.monotonic() - t0 < 2
+    assert 0.4 <= time.monotonic() - t0 < 2
     assert ei.value.code == H.SERVER_START_FAILED
     assert "status 1" in str(ei.value) and "/fake/sessions/polyagent/herdr-server.log" in str(ei.value)
 
@@ -267,3 +268,50 @@ def test_entry_operation_does_not_restart_on_other_unavailable_codes(fake):
     with pytest.raises(HerdrUnavailableError):
         pa.cleanup()
     assert server_spawns(fake) == []
+
+
+def test_lost_race_against_a_server_that_answers_later(fake):
+    """N2: our child exits ("already running") and the other server only answers after a while."""
+    fake.running = False
+    fake.server_starts = False
+    fake.server_exit = 1
+    probes = {"n": 0}
+    spawned = []
+    fake.on_server = lambda: spawned.append(1)
+
+    def handler(argv):
+        if spawned and argv[3:5] == ["workspace", "list"]:
+            probes["n"] += 1
+            if probes["n"] == 5:  # ~1 s after our child exited
+                fake.running = True
+        return None
+
+    fake.handler = handler
+    PolyAgent(server_start_timeout=10)
+    assert probes["n"] >= 5
+
+
+def test_log_hint_session_list_is_bounded(fake):
+    """N3: a hanging `session list` while building the error hint must not add ~30 s."""
+    fake.running = False
+    fake.server_starts = False
+    fake.handler = lambda argv: Resp(hang=True) if argv[3:5] == ["session", "list"] else None
+    t0 = time.monotonic()
+    with pytest.raises(HerdrUnavailableError) as ei:
+        PolyAgent(server_start_timeout=0.5)
+    assert time.monotonic() - t0 < 0.5 + M.HINT_LIMIT + 1
+    assert "herdr-server.log" in str(ei.value)
+    hint_calls = [p for a, p in zip(fake.argvs, fake.procs) if a[3:5] == ["session", "list"]]
+    assert hint_calls and all(t <= M.HINT_LIMIT + 0.01 for t in hint_calls[0].timeouts)
+
+
+def test_no_hint_call_when_the_cli_itself_hangs(fake):
+    """N3: after an unresponsive probe the hint does not call herdr again."""
+    fake.running = False
+    fake.server_starts = False
+    spawned = []
+    fake.on_server = lambda: spawned.append(1)
+    fake.handler = lambda argv: Resp(hang=True) if spawned and argv[3:5] == ["workspace", "list"] else None
+    with pytest.raises(HerdrUnavailableError):
+        PolyAgent(server_start_timeout=0.5)
+    assert not [a for a in fake.argvs if a[3:5] == ["session", "list"]]

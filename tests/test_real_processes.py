@@ -181,8 +181,9 @@ def test_two_threads_spawn_one_server_and_it_is_reaped(tmp_path):
     assert no_children_left()
 
 
-def test_server_exiting_at_once_fails_fast(tmp_path):
+def test_server_exiting_at_once_fails_fast(tmp_path, monkeypatch):
     """C7 with a real process."""
+    monkeypatch.setattr(M, "SERVER_EXIT_GRACE", 0.5)
     b = script(tmp_path, STATEFUL.replace("SERVER_BODY", "echo 'config error' >&2; exit 3"))
     t0 = time.monotonic()
     with pytest.raises(HerdrUnavailableError) as ei:

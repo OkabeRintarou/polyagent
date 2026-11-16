@@ -234,3 +234,23 @@ def test_owned_workspaces_reports_liveness(pa, fake):
 def test_older_than_type_checked(pa):
     with pytest.raises(InvalidConfigError):
         pa.cleanup(older_than="yesterday")
+
+
+def test_server_lost_during_cleanup_merges_both_passes(pa, fake, caplog):
+    """N5: names closed before the server vanished are not lost, and no per-entry warning spam."""
+    fake.workspaces = [ws("w1", mk("a")), ws("w2", mk("b")), ws("w3", mk("c"))]
+    state = {"stopped": False}
+
+    def handler(argv):
+        if argv[3:6] == ["workspace", "close", "w1"] and not state["stopped"]:
+            state["stopped"] = True
+            resp = fake.default(argv)
+            fake.running = False
+            return resp
+        return None
+
+    fake.handler = handler
+    with caplog.at_level("WARNING", logger="polyagent"):
+        assert pa.cleanup() == ["a", "b", "c"]
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len([a for a in fake.argvs if a[3:] == ["server"]]) == 1
