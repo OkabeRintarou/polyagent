@@ -93,6 +93,13 @@ def test_inherited_herdr_context_is_refused(guard):
     assert run("--session", NAME, "workspace", "list", extra_env={"HERDR_CONFIG_PATH": "/x"}).returncode == 0
 
 
+def test_inherited_xdg_config_home_is_refused(guard):
+    run, reached, _ = guard
+    r = run("--session", NAME, "workspace", "list", extra_env={"XDG_CONFIG_HOME": "/x"})
+    assert r.returncode != 0 and "inherited XDG_CONFIG_HOME" in r.stderr
+    assert reached() == []
+
+
 def test_bare_herdr_on_path_hits_the_shim(guard):
     run, reached, _ = guard
     r = run("workspace", "list", via_path=True)

@@ -50,6 +50,36 @@ def test_server_start_timeout(fake):
     assert time.monotonic() - t0 < 3
     assert ei.value.code == H.SERVER_START_TIMEOUT
     assert "svc-a" in str(ei.value) and "herdr-server.log" in str(ei.value)
+    server = [p for a, p in zip(fake.argvs, fake.procs) if a[3:] == ["server"]][0]
+    assert server.signals == ["TERM"] and server.returncode is not None
+
+
+def test_server_start_timeout_escalates_to_kill(fake, monkeypatch):
+    monkeypatch.setattr(M, "SERVER_TERM_GRACE", 0.1)
+    fake.running = False
+    fake.server_starts = False
+    fake.server_ignores_term = True
+    with pytest.raises(HerdrUnavailableError) as ei:
+        PolyAgent(server_start_timeout=0.3)
+    assert ei.value.code == H.SERVER_START_TIMEOUT
+    server = [p for a, p in zip(fake.argvs, fake.procs) if a[3:] == ["server"]][0]
+    assert server.signals == ["TERM", "KILL"] and server.returncode == -9
+
+
+def test_exited_server_with_start_timeout_shorter_than_grace_is_start_failed(fake, monkeypatch):
+    """Scenario: server 进程立即退出 — the start timeout ends before the grace period."""
+    monkeypatch.setattr(M, "SERVER_EXIT_GRACE", 5.0)
+    fake.running = False
+    fake.server_starts = False
+    fake.server_exit = 7
+    t0 = time.monotonic()
+    with pytest.raises(HerdrUnavailableError) as ei:
+        PolyAgent(server_start_timeout=0.5)
+    assert time.monotonic() - t0 < 2
+    assert ei.value.code == H.SERVER_START_FAILED
+    assert "status 7" in str(ei.value) and "polyagent" in str(ei.value)
+    server = [p for a, p in zip(fake.argvs, fake.procs) if a[3:] == ["server"]][0]
+    assert server.signals == []
 
 
 def test_recheck_under_lock_avoids_second_server(fake):
@@ -112,7 +142,7 @@ def test_lock_wait_timeout_rechecks_server(fake, monkeypatch):
 
 
 def test_server_exiting_at_once_fails_fast_with_status(fake, monkeypatch):
-    """C7: no need to wait the full start timeout when the server process is already gone."""
+    """Scenario: server 进程立即退出 (C7): no need to wait the full start timeout when the server process is already gone."""
     monkeypatch.setattr(M, "SERVER_EXIT_GRACE", 0.4)
     fake.running = False
     fake.server_starts = False
@@ -178,6 +208,37 @@ def test_caller_env_not_leaked(fake, monkeypatch):
     assert "PATH" in env
 
 
+def test_caller_xdg_config_home_never_reaches_herdr(fake, monkeypatch, tmp_path):
+    """Scenario: 调用方环境不同 — XDG_CONFIG_HOME would move herdr's session dir, so it is
+    removed from every herdr child (CLI calls and the server); other XDG_* stay."""
+    fake.running = False
+    PolyAgent()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "other-config"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1")
+    pa = PolyAgent()
+    pa.cleanup()
+    pa.stop_server()
+    assert len(server_spawns(fake)) == 1
+    envs = [kw.get("env") for _, kw in fake.calls if _[1:] != ["--version"]]
+    assert envs and all(e is not None and "XDG_CONFIG_HOME" not in e for e in envs)
+    assert server_spawns(fake)[0][1]["env"].get("XDG_CONFIG_HOME") is None
+    assert all("XDG_CONFIG_HOME" not in kw["env"] for _, kw in fake.calls if kw.get("env") is not None)
+
+
+def test_server_env_drops_xdg_config_home_even_from_explicit_base():
+    env = M.server_env([], {"XDG_CONFIG_HOME": "/x", "XDG_DATA_HOME": "/d", "PATH": "/bin"})
+    assert env == {"XDG_DATA_HOME": "/d", "PATH": "/bin"}
+    assert "XDG_CONFIG_HOME" not in H.herdr_env({"XDG_CONFIG_HOME": "/x", "HERDR_CONFIG_PATH": "/c"})
+
+
+def test_passthrough_of_session_dir_variable_rejected(fake):
+    """Scenario: 透传会搬走 session 目录的变量."""
+    fake.running = False
+    with pytest.raises(InvalidConfigError):
+        PolyAgent(server_env_passthrough=["XDG_CONFIG_HOME"])
+    assert fake.calls == []
+
+
 def test_explicit_passthrough(fake, monkeypatch):
     """Scenario: 显式透传."""
     fake.running = False
@@ -209,6 +270,7 @@ def test_stop_server(fake):
     pa = PolyAgent()
     pa.stop_server()
     assert [a[3:] for a in fake.argvs if a[3:4] == ["session"]] == [
+        ["session", "list", "--json"],  # construct-time default check (D2)
         ["session", "list", "--json"],
         ["session", "stop", "polyagent", "--json"],
     ]
@@ -271,7 +333,7 @@ def test_entry_operation_does_not_restart_on_other_unavailable_codes(fake):
 
 
 def test_lost_race_against_a_server_that_answers_later(fake):
-    """N2: our child exits ("already running") and the other server only answers after a while."""
+    """Scenario: 输给另一个启动方 (N2): our child exits ("already running") and the other server only answers after a while."""
     fake.running = False
     fake.server_starts = False
     fake.server_exit = 1
@@ -295,13 +357,15 @@ def test_log_hint_session_list_is_bounded(fake):
     """N3: a hanging `session list` while building the error hint must not add ~30 s."""
     fake.running = False
     fake.server_starts = False
-    fake.handler = lambda argv: Resp(hang=True) if argv[3:5] == ["session", "list"] else None
+    spawned = []
+    fake.on_server = lambda: spawned.append(1)
+    fake.handler = lambda argv: Resp(hang=True) if spawned and argv[3:5] == ["session", "list"] else None
     t0 = time.monotonic()
     with pytest.raises(HerdrUnavailableError) as ei:
         PolyAgent(server_start_timeout=0.5)
     assert time.monotonic() - t0 < 0.5 + M.HINT_LIMIT + 1
     assert "herdr-server.log" in str(ei.value)
-    hint_calls = [p for a, p in zip(fake.argvs, fake.procs) if a[3:5] == ["session", "list"]]
+    hint_calls = [p for a, p in zip(fake.argvs, fake.procs) if a[3:5] == ["session", "list"]][1:]
     assert hint_calls and all(t <= M.HINT_LIMIT + 0.01 for t in hint_calls[0].timeouts)
 
 
@@ -314,4 +378,5 @@ def test_no_hint_call_when_the_cli_itself_hangs(fake):
     fake.handler = lambda argv: Resp(hang=True) if spawned and argv[3:5] == ["workspace", "list"] else None
     with pytest.raises(HerdrUnavailableError):
         PolyAgent(server_start_timeout=0.5)
-    assert not [a for a in fake.argvs if a[3:5] == ["session", "list"]]
+    # only the construct-time default check, made before the probe hung
+    assert len([a for a in fake.argvs if a[3:5] == ["session", "list"]]) == 1

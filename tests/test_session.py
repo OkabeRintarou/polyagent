@@ -44,6 +44,33 @@ def test_client_refuses_bad_session_too(herdr_bin, name):
         H.HerdrClient(name, herdr_bin)
 
 
+@pytest.mark.parametrize("flag", [True, None, "false", 0])
+def test_listed_session_not_explicitly_non_default_is_refused(fake, flag):
+    """Scenario: 名字合法但被标记为 default (a missing or non-boolean flag counts as default)."""
+    fake.running = False
+    fake.sessions_default = flag
+    with pytest.raises(HerdrError) as ei:
+        PolyAgent(session="svc-a")
+    assert ei.value.code == "default_session_refused"
+    rest = [a[3:] for a in fake.argvs if a[1:] != ["--version"]]
+    assert rest == [["session", "list", "--json"]]  # no probe, no server spawn
+
+
+def test_unlisted_session_name_is_accepted(fake):
+    fake.running = False
+    fake.session_listed = False
+    PolyAgent(session="svc-a")
+    assert [a for a in fake.argvs if a[3:] == ["server"]]
+
+
+def test_default_check_runs_after_version_check(fake):
+    fake.version = "herdr 0.9.4"
+    fake.sessions_default = True
+    with pytest.raises(HerdrError) as ei:
+        PolyAgent()
+    assert ei.value.code == "unsupported_version"
+
+
 def test_version_too_old(fake):
     """Scenario: 版本过低."""
     fake.version = "herdr 0.9.4"

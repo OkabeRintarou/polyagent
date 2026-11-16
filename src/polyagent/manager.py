@@ -37,12 +37,13 @@ SERVER_ENV_NAMES = frozenset(
     }
 )
 SERVER_ENV_PREFIXES = ("LC_", "XDG_")
-PASSTHROUGH_FORBIDDEN_NAMES = frozenset({"BASH_ENV", "ENV", "NODE_OPTIONS"})
+PASSTHROUGH_FORBIDDEN_NAMES = frozenset({"BASH_ENV", "ENV", "NODE_OPTIONS"}) | H.SESSION_DIR_VARS
 PASSTHROUGH_FORBIDDEN_PREFIXES = ("LD_", "HERDR_")
 _ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 SERVER_PROBE_INTERVAL = 0.2
 SERVER_EXIT_GRACE = 3.0  # keep probing this long after our server child exited (lost race)
 HINT_LIMIT = 2.0  # upper bound for the `session list` used to build error hints
+SERVER_TERM_GRACE = 2.0  # SIGTERM -> SIGKILL for a server child that never came up
 SERVER_LOCK_SLACK = 5.0  # extra wait for server.lock beyond the holder's own start timeout
 
 
@@ -70,7 +71,7 @@ def server_env(passthrough: Iterable[str], base: dict[str, str] | None = None) -
     return {
         k: v
         for k, v in src.items()
-        if k in SERVER_ENV_NAMES or k.startswith(SERVER_ENV_PREFIXES) or k in keep
+        if (k in SERVER_ENV_NAMES or k.startswith(SERVER_ENV_PREFIXES) or k in keep) and k not in H.SESSION_DIR_VARS
     }
 
 
@@ -197,11 +198,13 @@ class PolyAgent:
         ):
             raise InvalidConfigError("server_start_timeout must be a positive number of seconds")
         self._server_start_timeout = float(server_start_timeout)
+        locks.lock_dir(self._session)  # D5 prerequisites (passwd entry, writable home) fail early
         binary = H.find_herdr(herdr_path)
         H.check_version(binary)
         self._herdr = H.HerdrClient(self._session, binary)
         self._server_mutex = threading.Lock()
         self._probe_unresponsive = False
+        self._refuse_if_marked_default()
         self.ensure_server()
 
     @property
@@ -257,8 +260,7 @@ class PolyAgent:
             time.sleep(min(SERVER_PROBE_INTERVAL, remaining))
             if self._probe(max(0.1, min(H.PROBE_LIMIT, deadline - time.monotonic()))):
                 return
-            code = proc.poll()
-            if code is None:
+            if proc.poll() is None:
                 continue
             # Our child exited. It may have lost a race against a server started outside polyagent
             # ("already running") that does not answer yet, so keep probing for a short grace period.
@@ -266,16 +268,23 @@ class PolyAgent:
             if exited_at is None:
                 exited_at = now
             if now - exited_at >= SERVER_EXIT_GRACE:
-                raise HerdrUnavailableError(
-                    H.SERVER_START_FAILED,
-                    f"herdr server for session {self._session!r} exited with status {code} and no server "
-                    f"answered within {SERVER_EXIT_GRACE:g}s; {self._server_log_hint()}",
-                    argv,
-                )
+                raise self._start_failed(proc, argv, f"no server answered within {SERVER_EXIT_GRACE:g}s")
+        if proc.poll() is not None:  # exited, and the start timeout came before the grace period ended
+            raise self._start_failed(proc, argv, f"no server answered within {self._server_start_timeout:g}s")
+        # Still running but never served: it would only pile up with every retry (D3).
+        _terminate_and_reap(proc)
         raise HerdrUnavailableError(
             H.SERVER_START_TIMEOUT,
             f"herdr server for session {self._session!r} did not come up within "
-            f"{self._server_start_timeout:g}s; {self._server_log_hint()}",
+            f"{self._server_start_timeout:g}s and was terminated; {self._server_log_hint()}",
+            argv,
+        )
+
+    def _start_failed(self, proc: subprocess.Popen, argv: list[str], why: str) -> HerdrUnavailableError:
+        return HerdrUnavailableError(
+            H.SERVER_START_FAILED,
+            f"herdr server for session {self._session!r} exited with status {proc.returncode} and {why}; "
+            f"{self._server_log_hint()}",
             argv,
         )
 
@@ -310,15 +319,22 @@ class PolyAgent:
         self.ensure_server()
         return fn()
 
-    def stop_server(self) -> None:
-        """Stop this session's server; every agent in the session (of any process) is killed."""
+    def _session_entries(self) -> list[dict[str, Any]]:
+        """This session's entries in ``session list``; refuse unless each is explicitly non-default (D2)."""
         entries = [s for s in self._herdr.session_list() if s.get("name") == self._session]
         if any(s.get("default") is not False for s in entries):
             raise HerdrError(
                 H.DEFAULT_SESSION_REFUSED,
-                f"herdr reports session {self._session!r} as the default session; refusing to stop it",
+                f"herdr reports session {self._session!r} as the default session; refusing to use it",
             )
-        if not entries:
+        return entries
+
+    def _refuse_if_marked_default(self) -> None:
+        self._session_entries()
+
+    def stop_server(self) -> None:
+        """Stop this session's server; every agent in the session (of any process) is killed."""
+        if not self._session_entries():
             return
         self._herdr.session_stop()
 
@@ -364,8 +380,14 @@ class PolyAgent:
             if e.code != H.SERVER_NOT_RUNNING:
                 raise
             first: list[str] = list(getattr(e, "closed", []))
-        self.ensure_server()
-        return first + self._cleanup(filtered, cutoff, discussion_id)
+        # The server went away mid-way: restart it and run a second pass; both passes count (D4).
+        try:
+            self.ensure_server()
+            second = self._cleanup(filtered, cutoff, discussion_id)
+        except PolyAgentError as e:
+            e.closed = _dedupe(first + list(getattr(e, "closed", [])))  # type: ignore[attr-defined]
+            raise
+        return _dedupe(first + second)
 
     def _cleanup(self, filtered: bool, cutoff: float | None, discussion_id: str | None) -> list[str]:
         closed: list[str] = []
@@ -389,7 +411,7 @@ class PolyAgent:
                         done = self._close_if_marked(ow, require_orphan=True)
             except HerdrUnavailableError as e:
                 if e.code == H.SERVER_NOT_RUNNING:  # nothing else can succeed now; stop and report progress
-                    e.closed = closed  # type: ignore[attr-defined]
+                    e.closed = _dedupe(closed)  # type: ignore[attr-defined]
                     raise
                 log.warning("cleanup: closing workspace %s (agent %s) failed: %s", ow.workspace_id, m.name, e)
                 errors.append(e)
@@ -402,9 +424,9 @@ class PolyAgent:
                 closed.append(m.name)
         if errors:
             first = errors[0]
-            first.closed = closed  # type: ignore[attr-defined]
+            first.closed = _dedupe(closed)  # type: ignore[attr-defined]
             raise first
-        return closed
+        return _dedupe(closed)
 
     def _close_if_marked(self, ow: OwnedWorkspace, require_orphan: bool = False) -> bool:
         """Re-read the label (and liveness) right before closing; close only if unchanged."""
@@ -426,6 +448,28 @@ class PolyAgent:
             raise
         log.info("closed workspace %s of agent %s (session %s)", ow.workspace_id, ow.marker.name, self._session)
         return True
+
+
+def _dedupe(names: list[str]) -> list[str]:
+    """Order-preserving: a name can own several workspaces (restored ones next to a new one)."""
+    return list(dict.fromkeys(names))
+
+
+def _terminate_and_reap(proc: subprocess.Popen) -> None:
+    """SIGTERM our own server child, SIGKILL after ``SERVER_TERM_GRACE``; wait until it is reaped."""
+    for signal_it in (proc.terminate, proc.kill):
+        if proc.poll() is not None:
+            return
+        try:
+            signal_it()
+        except OSError:
+            pass
+        try:
+            proc.wait(SERVER_TERM_GRACE)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+    log.warning("herdr server child %s did not exit after SIGKILL", proc.pid)
 
 
 def _to_unix(value: datetime | float | None) -> float | None:

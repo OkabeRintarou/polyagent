@@ -198,3 +198,37 @@ def test_relative_herdr_path_works_for_server_spawn(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     M.PolyAgent(session=S, herdr_path="bin/herdr", server_start_timeout=5)
     assert f"--session {S} server" in calls(tmp_path)
+
+
+def _server_pid(tmp_path) -> int:
+    return int((tmp_path / "bin" / "server.pid").read_text())
+
+
+@pytest.mark.parametrize("body", ["exec sleep 30", "trap '' TERM; exec sleep 30"], ids=["term", "kill"])
+def test_start_timeout_terminates_and_reaps_our_server(tmp_path, monkeypatch, body):
+    """Scenario: server 启动超时 — the never-serving child is terminated (SIGKILL if it ignores
+    SIGTERM) and reaped: no process and no zombie remains."""
+    monkeypatch.setattr(M, "SERVER_TERM_GRACE", 0.3)
+    b = script(tmp_path, STATEFUL.replace("SERVER_BODY", f'echo $$ > "$D/server.pid"; {body}'))
+    with pytest.raises(HerdrUnavailableError) as ei:
+        M.PolyAgent(session=S, herdr_path=b, server_start_timeout=1)
+    assert ei.value.code == H.SERVER_START_TIMEOUT and S in str(ei.value)
+    assert not os.path.exists(f"/proc/{_server_pid(tmp_path)}")
+
+
+def test_exited_server_with_start_timeout_shorter_than_grace(tmp_path, monkeypatch):
+    """Scenario: server 进程立即退出, start timeout < grace: start_failed with the exit status."""
+    monkeypatch.setattr(M, "SERVER_EXIT_GRACE", 5.0)
+    b = script(tmp_path, STATEFUL.replace("SERVER_BODY", "exit 3"))
+    t0 = time.monotonic()
+    with pytest.raises(HerdrUnavailableError) as ei:
+        M.PolyAgent(session=S, herdr_path=b, server_start_timeout=0.6)
+    assert time.monotonic() - t0 < 2.5
+    assert ei.value.code == H.SERVER_START_FAILED and "status 3" in str(ei.value)
+
+
+def test_lost_race_against_a_server_that_answers_later_real(tmp_path):
+    """Scenario: 输给另一个启动方 — our child exits at once, the other server answers ~1 s later."""
+    b = script(tmp_path, STATEFUL.replace("SERVER_BODY", '( sleep 1; : > "$D/running" ) & exit 1'))
+    M.PolyAgent(session=S, herdr_path=b, server_start_timeout=10)
+    assert [c for c in calls(tmp_path) if c.endswith(" server")] == [f"--session {S} server"]

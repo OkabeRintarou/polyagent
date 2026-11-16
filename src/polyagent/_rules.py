@@ -9,6 +9,8 @@ import re
 
 from .errors import InvalidConfigError
 
+KINDS = ("codex", "copilot", "cursor", "claude")  # supported agent kinds; adapters live in ``kinds``
+
 SESSION_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 AGENT_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 DISCUSSION_ID_RE = re.compile(r"[0-9a-f]{32}")
@@ -24,6 +26,7 @@ DEFAULT_SESSION_REFUSED = "default_session_refused"
 SERVER_LOCK_TIMEOUT = "server_lock_timeout"
 SERVER_START_FAILED = "server_start_failed"
 SERVER_START_TIMEOUT = "server_start_timeout"
+UNSUPPORTED_SHELL = "unsupported_shell"  # the pane's shell is not a POSIX shell (D6)
 
 
 def validate_session_name(session: object) -> str:

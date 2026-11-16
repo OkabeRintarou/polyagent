@@ -193,3 +193,49 @@ codex 空闲时收到 `C-c` 会直接退出（打印 `resume <id>`）。
   客户端（未设该变量）随即连不上 server。cursor 的隔离因此只能在 pane 内导出 `XDG_CONFIG_HOME`。
 - herdr 对 copilot 的状态识别：每次 `agent prompt --wait` 都返回 `agent_prompt_stalled`，且 copilot 工作中 `agent get` 仍报 `idle`。
 - herdr 对 cursor：启动时目录信任对话框仍在屏幕上，`agent start` 已返回就绪。
+
+### `XDG_CONFIG_HOME` 搬走 session 目录（任务 13.9，只用 herdr，herdr 0.9.5）
+
+临时 session `$S`（`polyagent-test-` 加随机后缀），`$T` 为 `mktemp -d` 目录；命令均不带 `HERDR_*`（`HERDR_CONFIG_PATH` 除外），
+前后 `herdr session list` 中的名字一致（只有测试前已有的 session）。
+
+```
+# 1. 以 XDG_CONFIG_HOME=$T 拉起 server
+$ XDG_CONFIG_HOME=$T setsid herdr --session $S server &
+$ ls $T/herdr/sessions
+$S
+$ ls ~/.config/herdr/sessions/$S
+ls: cannot access '~/.config/herdr/sessions/$S': No such file or directory
+
+# 2. 不带 XDG_CONFIG_HOME 的客户端找不到它
+$ herdr --session $S workspace list
+{"id":"cli:workspace:list","error":{"code":"server_not_running","message":"no herdr server is running at ~/.config/herdr/sessions/$S/herdr.sock; run `herdr session attach $S` to start or attach it"}}
+[rc=1]
+$ herdr session list --json        # 不含 $S
+
+# 3. 带同一个 XDG_CONFIG_HOME 的客户端可以连上
+$ XDG_CONFIG_HOME=$T herdr --session $S workspace list
+{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[]}}
+$ XDG_CONFIG_HOME=$T herdr session list --json   # 含 $S，running: true
+
+# 4. 不带 XDG_CONFIG_HOME 再拉起同名 server：成功，同一个名字同时有两个 server 进程
+$ setsid herdr --session $S server &
+$ herdr --session $S workspace list
+{"id":"cli:workspace:list","result":{"type":"workspace_list","workspaces":[]}}
+$ pgrep -fc -- "--session $S server"
+2
+
+# 清理：两处各自 stop + delete
+$ XDG_CONFIG_HOME=$T herdr session stop $S --json
+{"session":{"default":false,"name":"$S","running":false,"session_dir":"$T/herdr/sessions/$S","socket_path":"$T/herdr/sessions/$S/herdr.sock"},"stopped":true}
+$ XDG_CONFIG_HOME=$T herdr session delete $S --json
+{"deleted":true,"session":{"default":false,"name":"$S",...,"session_dir":"$T/herdr/sessions/$S",...}}
+$ herdr session stop $S --json
+{"session":{"default":false,"name":"$S","running":false,"session_dir":"~/.config/herdr/sessions/$S",...},"stopped":true}
+$ herdr session delete $S --json
+{"deleted":true,...}
+```
+
+结论：herdr 的 session 目录（含 socket）是 `${XDG_CONFIG_HOME:-~/.config}/herdr/sessions/<name>/`。
+环境不同的调用方对同一个名字会看到不同的 server，甚至各自拉起一个。库因此在所有 herdr 调用和 server 环境中剔除
+`XDG_CONFIG_HOME`，并拒绝把它列为透传变量（design D1、D3）。

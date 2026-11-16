@@ -8,7 +8,8 @@ the temporary session:
   third must be a known subcommand (an option there could hide a ``session stop <other>``);
 * no further ``--session`` / ``--session=...`` before ``--``;
 * ``session`` subcommands: only ``list``, or ``stop``/``delete`` whose target is ``<temp>``;
-* no inherited ``HERDR_*`` variable other than ``HERDR_CONFIG_PATH`` in the environment.
+* no inherited ``HERDR_*`` variable other than ``HERDR_CONFIG_PATH`` in the environment, and no
+  ``XDG_CONFIG_HOME`` (it moves herdr's session directory, design D1/D3).
 
 Records are ``\\x1f``-separated arguments terminated by ``\\x1e`` so multi-line arguments survive.
 """
@@ -35,7 +36,7 @@ refuse() {
   exit 1
 }
 for v in $(compgen -e); do
-  case "$v" in HERDR_CONFIG_PATH) ;; HERDR_*) refuse "inherited $v" ;; esac
+  case "$v" in HERDR_CONFIG_PATH) ;; HERDR_*|XDG_CONFIG_HOME) refuse "inherited $v" ;; esac
 done
 if [ "$#" -eq 1 ] && [ "$1" = "--version" ]; then exec "$REAL" --version; fi
 if [ "$1" != "--session" ] || [ "$2" != "$NAME" ]; then refuse "not scoped to the temp session"; fi

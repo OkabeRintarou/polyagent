@@ -50,6 +50,25 @@ def test_two_processes_initialise_one_server(temp_session):
     assert len(spawns) == 1
 
 
+def test_caller_with_xdg_config_home_uses_the_same_server(temp_session, tmp_path):
+    """Scenario: 调用方环境不同 — real herdr would look for the session under $XDG_CONFIG_HOME."""
+    script = textwrap.dedent(
+        f"""
+        from polyagent.manager import PolyAgent
+        pa = PolyAgent(session={temp_session.name!r}, herdr_path={temp_session.shim!r}, server_start_timeout=20)
+        print("OK", len(pa.herdr.workspace_list()), flush=True)
+        """
+    )
+    base = {k: v for k, v in os.environ.items() if k != "XDG_CONFIG_HOME"}
+    other = dict(base, XDG_CONFIG_HOME=str(tmp_path / "xdg-config"))
+    for env in (base, other):
+        r = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=60, env=env)
+        assert r.returncode == 0 and r.stdout.strip() == "OK 0", (r.stdout, r.stderr)
+    assert len(temp_session.server_pids()) == 1
+    assert len([c for c in temp_session.calls() if c[2:] == ["server"]]) == 1
+    assert not (tmp_path / "xdg-config" / "herdr").exists()
+
+
 def test_marker_and_cleanup_on_real_workspaces(temp_session, tmp_path):
     pa = PolyAgent(session=temp_session.name, herdr_path=temp_session.shim)
     now = int(time.time())

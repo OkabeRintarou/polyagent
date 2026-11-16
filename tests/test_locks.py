@@ -226,3 +226,47 @@ def test_uid_without_passwd_entry_is_config_error(monkeypatch):
     monkeypatch.setattr(pwd, "getpwuid", missing)
     with pytest.raises(InvalidConfigError):
         ORIG_USER_HOME()
+
+
+def test_lock_dir_not_creatable_is_config_error(monkeypatch, tmp_path):
+    """D5: a home that cannot hold the lock directory is a configuration error."""
+    home = tmp_path / "home-is-a-file"
+    home.write_text("")
+    monkeypatch.setattr(locks, "user_home", lambda: home)
+    with pytest.raises(InvalidConfigError):
+        locks.lock_dir("polyagent")
+    with pytest.raises(InvalidConfigError):
+        locks.agent_lock("polyagent", "rev")
+
+
+def test_agent_lock_subdir_not_creatable_is_config_error(lock_home):
+    d = locks.lock_dir("polyagent")
+    (d / locks.AGENT_LOCK_DIR).write_text("")  # a file where the subdirectory should be
+    with pytest.raises(InvalidConfigError):
+        locks.agent_lock("polyagent", "rev")
+
+
+def test_polyagent_with_unusable_lock_dir_makes_no_herdr_call(fake, monkeypatch, tmp_path):
+    from polyagent.manager import PolyAgent
+
+    home = tmp_path / "home-is-a-file"
+    home.write_text("")
+    monkeypatch.setattr(locks, "user_home", lambda: home)
+    with pytest.raises(InvalidConfigError):
+        PolyAgent()
+    assert fake.calls == []
+
+
+def test_polyagent_without_passwd_entry_is_config_error(fake, monkeypatch):
+    import pwd
+
+    from polyagent.manager import PolyAgent
+
+    def missing(uid):
+        raise KeyError(uid)
+
+    monkeypatch.setattr(pwd, "getpwuid", missing)
+    monkeypatch.setattr(locks, "user_home", ORIG_USER_HOME)
+    with pytest.raises(InvalidConfigError):
+        PolyAgent()
+    assert fake.calls == []

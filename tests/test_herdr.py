@@ -1,5 +1,7 @@
 """Task 2.2: herdr CLI wrapper (design D1) — herdr-runtime error reporting, caller context isolation, bounded waits."""
 
+import json
+import shlex
 import threading
 import time
 
@@ -355,3 +357,95 @@ def test_bad_response_redacts_long_prompt(client, fake):
     with pytest.raises(HerdrError) as ei:
         client.agent_prompt("rev", secret, 1000)
     assert ei.value.code == "bad_response" and secret not in ei.value.message
+
+
+# ---- 2.10 / D1: redact before truncating; withhold echoes of the opening fragment ----
+
+LONG_PROMPT = "Review the module polyagent.herdr carefully. " + "lorem ipsum dolor sit amet " * 200
+
+
+def _assert_no_prompt_text(e, prompt):
+    text = str(e) + " ".join(e.argv)
+    assert prompt.strip()[:16] not in text
+    assert not any(prompt[i:i + 24] in text for i in range(0, len(prompt) - 24, 7))
+
+
+@pytest.mark.parametrize(
+    "echo",
+    [
+        lambda p: f"error: unexpected argument '{p}' found",  # full echo, longer than the truncation limit
+        lambda p: f"error: unexpected argument '{p[:300]}...' found",  # herdr shortened it itself
+    ],
+    ids=["full", "shortened"],
+)
+def test_long_prompt_echoed_in_usage_error_is_not_leaked(client, fake, echo):
+    fake.handler = lambda argv: Resp(2, "", echo(LONG_PROMPT))
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("rev", LONG_PROMPT, 1000)
+    assert ei.value.code == "usage"
+    _assert_no_prompt_text(ei.value, LONG_PROMPT)
+    assert len(ei.value.message) <= H.MAX_MESSAGE
+
+
+@pytest.mark.parametrize(
+    "render",
+    [lambda p: json.dumps(p), lambda p: repr(p), lambda p: shlex.quote(p)],
+    ids=["json", "repr", "shell"],
+)
+def test_escaped_echo_of_prompt_is_withheld(client, fake, render):
+    prompt = "fix it\nnow: don't \"break\" anything\tplease, and keep the tests green"
+    prompt = prompt.encode().decode("unicode_escape")  # real newline, tab and quotes
+    fake.handler = lambda argv: Resp(1, "", f"error: cannot deliver {render(prompt)}")
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("rev", prompt, 1000)
+    assert "withheld" in ei.value.message
+    _assert_no_prompt_text(ei.value, prompt)
+
+
+def test_bad_response_redacts_before_truncating(client, fake):
+    prompt = "summarise the design of the lock module " * 3
+    fake.handler = lambda argv: Resp(0, "x" * 480 + prompt)
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("rev", prompt, 1000)
+    assert ei.value.code == "bad_response"
+    _assert_no_prompt_text(ei.value, prompt)
+
+
+def test_non_echo_messages_are_truncated_after_redaction(client, fake):
+    prompt = "p" * 40
+    fake.handler = lambda argv: err("agent_blocked", "y" * 990 + prompt)
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("rev", prompt, 1000)
+    assert prompt[:10] not in ei.value.message and len(ei.value.message) <= H.MAX_MESSAGE
+
+
+def test_prompt_without_wait_carries_no_timeout(client, fake):
+    """13.1: herdr rejects `--timeout` without `--wait` ("--timeout requires --wait")."""
+    fake.handler = lambda argv: ok({"agent": {"name": "rev", "agent_status": "idle"}}) if argv[3:5] == ["agent", "prompt"] else None
+    client.agent_prompt("rev", "hello", wait=False)
+    argv = [a for a in fake.argvs if a[3:5] == ["agent", "prompt"]][-1]
+    assert "--wait" not in argv and "--timeout" not in argv
+    assert fake.procs[-1].timeouts[0] <= H.CALL_LIMIT + 0.01
+    client.agent_prompt("rev", "hello", 60_000)
+    argv = [a for a in fake.argvs if a[3:5] == ["agent", "prompt"]][-1]
+    assert argv[-3:] == ["--wait", "--timeout", "60000"]
+
+
+def test_prompt_timeout_argument_matches_wait(client, fake):
+    """Review C9: the timeout is optional without waiting and required with it."""
+    with pytest.raises(ValueError):
+        client.agent_prompt("rev", "hello", 60_000, wait=False)
+    with pytest.raises(ValueError):
+        client.agent_prompt("rev", "hello")
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("code", ["agent_prompt_stalled", "agent_blocked", "timeout", "some_new_code"])
+def test_partial_echo_is_withheld_under_any_error_code(client, fake, code):
+    """Review C7: a JSON error of any code echoing the prompt's first 200 characters is withheld."""
+    secret = "token sk-LIVE-" + "A1b2C3d4" * 60
+    fake.handler = lambda argv: err(code, f"prompt {secret[:200]}... was not acknowledged")
+    with pytest.raises(HerdrError) as ei:
+        client.agent_prompt("rev", secret, 1000)
+    assert ei.value.code == code and "withheld" in ei.value.message
+    assert secret[:16] not in str(ei.value)

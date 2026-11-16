@@ -41,7 +41,8 @@ def pytest_collection_modifyitems(config, items):
 
 
 def _clean_env() -> dict[str, str]:
-    return {k: v for k, v in os.environ.items() if not k.startswith("HERDR_") or k == "HERDR_CONFIG_PATH"}
+    return {k: v for k, v in os.environ.items()
+            if (not k.startswith("HERDR_") or k == "HERDR_CONFIG_PATH") and k != "XDG_CONFIG_HOME"}
 
 
 def _real_herdr() -> str | None:

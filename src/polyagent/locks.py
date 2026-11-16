@@ -53,7 +53,15 @@ def _private_dir(d: Path) -> Path:
 
 
 def lock_dir(session: str) -> Path:
-    return _private_dir(user_home() / ".local" / "state" / "polyagent" / validate_session_name(session))
+    """``<passwd home>/.local/state/polyagent/<session>/`` (0700); ``InvalidConfigError`` if it cannot be used."""
+    d = user_home() / ".local" / "state" / "polyagent" / validate_session_name(session)
+    try:
+        return _private_dir(d)
+    except OSError as e:
+        raise InvalidConfigError(
+            f"cannot create the polyagent lock directory {d} ({e.strerror or e}); "
+            "the home directory from the password database must be writable"
+        ) from None
 
 
 class FileLock:
@@ -119,7 +127,12 @@ class FileLock:
 
 def agent_lock(session: str, name: str) -> FileLock:
     """An *unacquired* lock object for agent ``name``."""
-    return FileLock(_private_dir(lock_dir(session) / AGENT_LOCK_DIR) / f"{validate_agent_name(name)}.lock")
+    sub = lock_dir(session) / AGENT_LOCK_DIR
+    try:
+        _private_dir(sub)
+    except OSError as e:
+        raise InvalidConfigError(f"cannot create the agent lock directory {sub} ({e.strerror or e})") from None
+    return FileLock(sub / f"{validate_agent_name(name)}.lock")
 
 
 def server_lock(session: str) -> FileLock:

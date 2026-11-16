@@ -173,7 +173,8 @@ def snapshot_then(fake, mutate):
 
 
 def test_agent_that_finished_starting_after_snapshot_is_kept(pa, fake):
-    """C2: orphan per snapshot, then the starter finishes and releases the lock -> re-check under lock."""
+    """Scenario: 回收期间启动完成 (C2): orphan per snapshot, then the starter finishes and releases
+    the lock -> re-check under lock."""
     fake.workspaces = [ws("w1", mk("rev"))]
     starter = locks.acquire_for_start("polyagent", "rev")
 
@@ -188,7 +189,8 @@ def test_agent_that_finished_starting_after_snapshot_is_kept(pa, fake):
 
 @pytest.mark.parametrize("kwargs", [{}, {"discussion_id": DISC}, {"older_than": 10**12}])
 def test_label_changed_after_snapshot_is_not_closed(pa, fake, kwargs):
-    """C2: the label is re-read before closing in every mode (rename / renumbered workspace)."""
+    """Scenario: 回收期间标记被改写 (C2): the label is re-read before closing in every mode
+    (rename / renumbered workspace)."""
     fake.workspaces = [ws("w1", mk("rev", disc=DISC))]
 
     def rename():
@@ -254,3 +256,52 @@ def test_server_lost_during_cleanup_merges_both_passes(pa, fake, caplog):
         assert pa.cleanup() == ["a", "b", "c"]
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
     assert len([a for a in fake.argvs if a[3:] == ["server"]]) == 1
+
+
+def test_second_pass_error_carries_first_pass_names(pa, fake):
+    """2.10 / D4: the server vanishes after closing `a`; in the second pass closing `c` fails.
+    The error's `closed` holds both passes (`a` from the first, `b` from the second)."""
+    fake.workspaces = [ws("w1", mk("a")), ws("w2", mk("b")), ws("w3", mk("c"))]
+    state = {"stopped": False}
+
+    def handler(argv):
+        if argv[3:6] == ["workspace", "close", "w1"] and not state["stopped"]:
+            state["stopped"] = True
+            resp = fake.default(argv)
+            fake.running = False
+            return resp
+        if argv[3:6] == ["workspace", "close", "w3"]:
+            return err("pane_busy", "nope")
+        return None
+
+    fake.handler = handler
+    with pytest.raises(HerdrError) as ei:
+        pa.cleanup()
+    assert ei.value.code == "pane_busy"
+    assert ei.value.closed == ["a", "b"]
+
+
+def test_second_pass_restart_failure_carries_first_pass_names(pa, fake):
+    fake.workspaces = [ws("w1", mk("a")), ws("w2", mk("b"))]
+
+    def handler(argv):
+        if argv[3:6] == ["workspace", "close", "w1"]:
+            resp = fake.default(argv)
+            fake.running = False
+            fake.server_starts = False
+            fake.server_exit = 1
+            return resp
+        return None
+
+    fake.handler = handler
+    pa._server_start_timeout = 0.3
+    with pytest.raises(HerdrError) as ei:
+        pa.cleanup()
+    assert ei.value.closed == ["a"]
+
+
+def test_cleanup_result_is_deduplicated(pa, fake):
+    """A name may own a restored workspace next to a newer one; it is reported once."""
+    fake.workspaces = [ws("w1", mk("a")), ws("w2", mk("a", created=101)), ws("w3", mk("b"))]
+    assert pa.cleanup() == ["a", "b"]
+    assert closed(fake) == ["w1", "w2", "w3"]

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -24,6 +25,7 @@ from ._rules import (  # re-exported: the herdr module is the single access poin
     SERVER_START_TIMEOUT,
     UNKNOWN,
     UNRESPONSIVE,
+    UNSUPPORTED_SHELL,
     UNSUPPORTED_VERSION,
     USAGE,
     validate_session_name,
@@ -41,6 +43,7 @@ from .errors import (
 SERVER_NOT_RUNNING = "server_not_running"
 PROTOCOL_MISMATCH = "protocol_mismatch"
 AGENT_NOT_FOUND = "agent_not_found"
+AGENT_NAME_TAKEN = "agent_name_taken"
 AGENT_NOT_READY = "agent_not_ready"
 AGENT_BLOCKED = "agent_blocked"
 AGENT_PROMPT_STALLED = "agent_prompt_stalled"
@@ -50,10 +53,10 @@ TIMEOUT = "timeout"
 UNAVAILABLE_CODES = frozenset({SERVER_NOT_RUNNING, PROTOCOL_MISMATCH, UNRESPONSIVE, LAUNCH_FAILED})
 
 __all__ = [
-    "AGENT_BLOCKED", "AGENT_NOT_FOUND", "AGENT_NOT_READY", "AGENT_PROMPT_STALLED", "BAD_RESPONSE",
+    "AGENT_BLOCKED", "AGENT_NAME_TAKEN", "AGENT_NOT_FOUND", "AGENT_NOT_READY", "AGENT_PROMPT_STALLED", "BAD_RESPONSE",
     "DEFAULT_SESSION_REFUSED", "LAUNCH_FAILED", "PROTOCOL_MISMATCH", "SERVER_LOCK_TIMEOUT",
     "SERVER_NOT_RUNNING", "SERVER_START_FAILED", "SERVER_START_TIMEOUT", "TIMEOUT", "UNAVAILABLE_CODES",
-    "UNKNOWN", "UNRESPONSIVE", "UNSUPPORTED_VERSION", "USAGE", "WORKSPACE_NOT_FOUND",
+    "UNKNOWN", "UNRESPONSIVE", "UNSUPPORTED_SHELL", "UNSUPPORTED_VERSION", "USAGE", "WORKSPACE_NOT_FOUND",
     "HerdrClient", "check_version", "find_herdr", "herdr_env", "parse_version", "validate_session_name",
 ]
 
@@ -75,10 +78,19 @@ class Cancel(Protocol):
     def is_set(self) -> bool: ...
 
 
+# Moves herdr's session directory: one session name must mean one server for all callers (D1, D3).
+SESSION_DIR_VARS = frozenset({"XDG_CONFIG_HOME"})
+
+
 def herdr_env(base: dict[str, str] | None = None) -> dict[str, str]:
-    """Environment for herdr CLI calls: drop inherited pane context (``HERDR_*``) except ``HERDR_CONFIG_PATH``."""
+    """Environment for herdr CLI calls: drop inherited pane context (``HERDR_*``, except
+    ``HERDR_CONFIG_PATH``) and ``XDG_CONFIG_HOME``, which would relocate the session directory."""
     src = os.environ if base is None else base
-    return {k: v for k, v in src.items() if not k.startswith("HERDR_") or k == "HERDR_CONFIG_PATH"}
+    return {
+        k: v
+        for k, v in src.items()
+        if (not k.startswith("HERDR_") or k == "HERDR_CONFIG_PATH") and k not in SESSION_DIR_VARS
+    }
 
 
 def find_herdr(path: str | None = None) -> str:
@@ -160,7 +172,7 @@ class HerdrClient:
     def _get(self, result: dict[str, Any], key: str, kind: type, args: Iterable[str]) -> Any:
         value = result.get(key)
         if not isinstance(value, kind):
-            raise _bad_response(json.dumps(result)[:500], self.argv(args), f"missing or malformed {key!r}")
+            raise _bad_response(json.dumps(result), self.argv(args), f"missing or malformed {key!r}")
         return value
 
     # ---- server / session ------------------------------------------------
@@ -257,15 +269,22 @@ class HerdrClient:
         return self._get(self.call(*argv, limit=_wait_limit(timeout_ms), cancel=cancel), "agent", dict, argv)
 
     def agent_prompt(
-        self, target: str, text: str, timeout_ms: int, wait: bool = True, cancel: Cancel | None = None
+        self, target: str, text: str, timeout_ms: int | None = None, wait: bool = True, cancel: Cancel | None = None
     ) -> dict[str, Any]:
+        """Submit ``text``. With ``wait`` (default) herdr waits up to ``timeout_ms`` (required);
+        without it nothing is waited for and ``timeout_ms`` must be omitted."""
         # `agent prompt` has no `--` terminator; callers must apply the D10 guard prefix first.
         if text.startswith("-"):
             raise InvalidPromptError("prompt text reaching herdr must not start with '-'")
         argv = ["agent", "prompt", target, text]
-        if wait:
-            argv.append("--wait")
-        argv += ["--timeout", str(_positive_ms(timeout_ms))]
+        if not wait:
+            if timeout_ms is not None:
+                raise ValueError("timeout_ms is only used with wait=True")
+            # herdr rejects `--timeout` without `--wait` (usage error, task 13.1); an ordinary call bound applies.
+            return self._get(self.call(*argv, limit=CALL_LIMIT, cancel=cancel), "agent", dict, argv)
+        if timeout_ms is None:
+            raise ValueError("timeout_ms is required with wait=True")
+        argv += ["--wait", "--timeout", str(_positive_ms(timeout_ms))]
         return self._get(self.call(*argv, limit=_wait_limit(timeout_ms), cancel=cancel), "agent", dict, argv)
 
     def agent_wait(
@@ -308,19 +327,24 @@ def _read_args(base: list[str], source: str, lines: int | None) -> list[str]:
 
 def _dicts(items: list[Any], argv: list[str]) -> list[dict[str, Any]]:
     if not all(isinstance(i, dict) for i in items):
-        raise _bad_response(json.dumps(items)[:500], argv, "list items must be objects")
+        raise _bad_response(json.dumps(items), argv, "list items must be objects")
     return items
 
 
 def _bad_response(raw: str, argv: list[str], why: str = "") -> HerdrError:
     detail = f"{why}: " if why else ""
-    return HerdrError(BAD_RESPONSE, _redact_text(detail + (raw or "").strip()[:500], argv), redact_argv(argv))
+    text = _redact_text(detail + (raw or "").strip(), argv)  # redact first, then truncate (D1)
+    return HerdrError(BAD_RESPONSE, text[:MAX_RAW_IN_ERROR], redact_argv(argv))
 
 
 # Text-bearing positional arguments (index into the args after `--session S`) that must not be
 # kept on exception objects: the prompt of `agent prompt` and the command of `pane run`.
 _SENSITIVE_ARGS = {("agent", "prompt"): 3, ("pane", "run"): 3}
 MIN_REDACT_IN_TEXT = 8  # shorter values are not searched for inside messages (they would mangle them)
+ECHO_FRAGMENT = 16  # opening characters of the prompt/command that must not survive in an echo-risk message
+MAX_MESSAGE = 1000  # error messages are truncated to this length *after* redaction
+MAX_RAW_IN_ERROR = 500
+_WITHHELD = "herdr rejected the arguments (message withheld: it may echo the prompt or command)"
 
 
 def _sensitive_index(argv: list[str]) -> int | None:
@@ -343,18 +367,37 @@ def redact_argv(argv: list[str]) -> list[str]:
     return out
 
 
+def _echo_forms(value: str) -> set[str]:
+    """Opening fragment of ``value`` as herdr or a shell might print it back: raw, or JSON-,
+    repr-, shell- or backslash-escaped. Escape the whole value first, then cut, so that the
+    fragment matches the start of the escaped echo whatever quoting style was chosen."""
+    escaped = [
+        value,
+        json.dumps(value)[1:],
+        repr(value)[1:],
+        shlex.quote(value).lstrip("'"),
+        value.encode("unicode_escape").decode("ascii"),
+    ]
+    return {e[:ECHO_FRAGMENT] for e in escaped if e[:ECHO_FRAGMENT]}
+
+
 def _redact_text(text: str, argv: list[str], echo_risk: bool = True) -> str:
-    """Hide the prompt/command inside ``text``. Long values are replaced where they occur; for short
-    ones a substring search would mangle the message, so a message that may echo arguments
-    (``echo_risk``: usage/unknown errors, raw output) is withheld instead."""
+    """Hide the prompt/command inside ``text`` (D1). Whole occurrences of long values are replaced;
+    the message is then withheld entirely if it still contains the value's opening fragment in any
+    escaped form, which catches truncated, wrapped and escaped echoes under any error code (review C7).
+    Values shorter than ``MIN_REDACT_IN_TEXT`` are only looked for in messages that may echo arguments
+    (``echo_risk``: usage/unknown errors, raw output), since a short word also occurs by chance (an
+    agent named like the prompt). Callers truncate only afterwards."""
     i = _sensitive_index(argv)
     if i is None or not argv[i]:
         return text
     value = argv[i]
     if len(value) >= MIN_REDACT_IN_TEXT:
-        return text.replace(value, _placeholder(value))
-    if echo_risk and value in text:
-        return "herdr rejected the arguments (message withheld: it may echo the prompt or command)"
+        text = text.replace(value, _placeholder(value))
+    stripped = value.strip()
+    if stripped and (echo_risk or len(stripped) >= MIN_REDACT_IN_TEXT):
+        if any(f in text for f in _echo_forms(stripped)):
+            return _WITHHELD
     return text
 
 
@@ -435,7 +478,8 @@ def make_error(code: str, message: str, argv: list[str]) -> HerdrError:
             "stop this session's server and let polyagent start it again)"
         )
     cls = HerdrUnavailableError if code in UNAVAILABLE_CODES else HerdrError
-    return cls(code, _redact_text(message, argv, echo_risk=code in (USAGE, UNKNOWN)), redact_argv(argv))
+    text = _redact_text(message, argv, echo_risk=code in (USAGE, UNKNOWN))[:MAX_MESSAGE]
+    return cls(code, text, redact_argv(argv))
 
 
 def parse_error(proc: subprocess.CompletedProcess[str], argv: list[str]) -> HerdrError:
@@ -447,5 +491,5 @@ def parse_error(proc: subprocess.CompletedProcess[str], argv: list[str]) -> Herd
         if isinstance(err, dict):
             return make_error(str(err.get("code") or UNKNOWN), str(err.get("message") or ""), argv)
     code = USAGE if proc.returncode == 2 else UNKNOWN
-    msg = (proc.stderr or proc.stdout or "").strip()[:1000]
+    msg = (proc.stderr or proc.stdout or "").strip()  # make_error redacts, then truncates
     return make_error(code, msg or f"herdr exited with {proc.returncode}", argv)

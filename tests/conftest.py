@@ -64,6 +64,9 @@ class FakeProc:
         self.timeouts: list[float | None] = []
         self.stdout = None
         self.stderr = None
+        self.server = False  # a fake `herdr server`: alive (returncode None) until signalled or exited
+        self.ignores_term = False
+        self.signals: list[str] = []
 
     def communicate(self, timeout: float | None = None):
         self.timeouts.append(timeout)
@@ -77,11 +80,21 @@ class FakeProc:
 
     def kill(self):
         self.killed = True
+        self.signals.append("KILL")
+        if self.server:
+            self.returncode = -9
+
+    def terminate(self):
+        self.signals.append("TERM")
+        if self.server and not self.ignores_term:
+            self.returncode = -15
 
     def poll(self):
         return self.returncode
 
     def wait(self, timeout: float | None = None):
+        if self.server and self.returncode is None and timeout is not None:
+            raise subprocess.TimeoutExpired("herdr server", timeout)
         return self.returncode
 
 
@@ -99,6 +112,7 @@ class FakeHerdr:
     handler: Callable[[list[str]], Resp | None] | None = None
     on_server: Callable[[], None] | None = None
     server_exit: int | None = None  # exit status of a fake server that terminates at once
+    server_ignores_term: bool = False
     calls: list[tuple[list[str], dict[str, Any]]] = field(default_factory=list)
     procs: list[FakeProc] = field(default_factory=list)
 
@@ -113,8 +127,11 @@ class FakeHerdr:
         if resp is None:
             resp = self.default(argv)
         proc = FakeProc(resp)
-        if argv[3:] == ["server"] and self.server_exit is not None:
-            proc.returncode = self.server_exit
+        if argv[3:] == ["server"]:
+            proc.server = True
+            proc.ignores_term = self.server_ignores_term
+            if self.server_exit is not None:
+                proc.returncode = self.server_exit
         self.procs.append(proc)
         return proc
 
