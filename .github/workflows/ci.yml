@@ -36,3 +36,35 @@ jobs:
         # Integration tests need a real herdr binary and agent CLIs and stay skipped
         # unless POLYAGENT_INTEGRATION=1 is set.
         run: uv run --frozen pytest -q
+
+  integration:
+    name: runtime integration (herdr ${{ env.HERDR_VERSION }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HERDR_VERSION: "0.9.5"
+      HERDR_SHA256: "14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install herdr
+        run: |
+          curl -fsSL -o herdr "https://github.com/herdrdev/herdr/releases/download/v${HERDR_VERSION}/herdr-linux-x86_64"
+          echo "${HERDR_SHA256}  herdr" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 herdr "$HOME/.local/bin/herdr"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/herdr" --version
+
+      - name: Install
+        run: uv sync --frozen
+
+      - name: Runtime integration tests
+        # Only the herdr runtime tests run here. Tests that start real agent CLIs need
+        # installed CLIs and credentials, so they are not part of CI.
+        run: POLYAGENT_INTEGRATION=1 uv run --frozen pytest -q -m integration tests/integration/test_runtime.py
