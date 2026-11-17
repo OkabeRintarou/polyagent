@@ -155,6 +155,7 @@ class _CallbackFailed(Exception):
     pass
 
 
+MARKER_CHARS = 16  # D13: the separator marker, 16 hex characters
 _BUDGET = object()  # the coordinator's ask was cut short by the total budget
 _INVALID = object()  # three invalid outputs
 
@@ -261,6 +262,7 @@ class Discussion:
             raise InvalidConfigError("keep_agents must be a bool")
         self._keep_agents = keep_agents
         self._reply_limit = _positive(reply_limit_bytes, "reply_limit_bytes", integer=True)
+        self._check_summary_budget()
         self._cancel = threading.Event()
         self._ran = threading.Lock()
         self._id = uuid.uuid4().hex
@@ -293,17 +295,17 @@ class Discussion:
         for name, spec in specs.items():  # defence in depth: members only ever run read_only (review C13)
             if spec.policy != READ_ONLY:
                 raise InvalidConfigError(f"{name}: discussion members always run read_only")
+        # The first input is checked with a placeholder of the marker's length, before the run flag: a
+        # call refused for its configuration never holds the flag, not even briefly (phase-8 review C4).
+        if len(self._first_input(requirement, "0" * MARKER_CHARS)[1].encode("utf-8")) > self._budget:
+            raise InvalidConfigError("the requirement and the participant roles do not fit in one coordinator "
+                                     f"input ({self._budget} bytes)")
         if not self._ran.acquire(blocking=False):
             raise InvalidConfigError("this Discussion has already been run")
         try:
             # D13 "分隔标记": generated only once this call owns the run, and kept on the run's own text
             # object, so a rejected concurrent run() cannot replace it (review C1).
-            text = PR.ProtocolText({p.name: p.role for p in self._participants}, self._template, secrets.token_hex(8))
-            opening = text.opening(requirement, self._max_rounds, self._total_timeout, self._turn_timeout)
-            first = opening + "\n" + text.reminder([PR.BRIEF], self._names(), None, None)
-            if len(first.encode("utf-8")) > self._budget:
-                raise InvalidConfigError("the requirement and the participant roles do not fit in one coordinator "
-                                         f"input ({self._budget} bytes)")
+            text, first = self._first_input(requirement, secrets.token_hex(MARKER_CHARS // 2))
             run = _Run(self, text, requirement, specs, first, on_event)
         except BaseException:
             self._ran.release()  # nothing was started; the object stays usable (review C14)
@@ -314,6 +316,30 @@ class Discussion:
 
     def _names(self) -> list[str]:
         return [p.name for p in self._participants]
+
+    def _check_summary_budget(self) -> None:
+        """D13 "协调者输入的长度": the summary input's fixed text plus room for feedback fits the budget,
+        and with every participant answering each reply still gets ``MIN_REPLY_SHARE_BYTES``."""
+        text = PR.ProtocolText({p.name: p.role for p in self._participants}, self._template, "0" * MARKER_CHARS)
+        footer = max((text.summary_request(r) for r in PR.SUMMARY_REASONS), key=lambda t: len(t.encode("utf-8")))
+        footer += text.reminder([PR.SUMMARY], self._names(), None, self._summary_timeout)
+        kind = self._coordinator.kind
+        fixed = len(footer.encode("utf-8")) + PR.FEEDBACK_RESERVE_BYTES
+        if fixed > self._budget:
+            raise InvalidConfigError(
+                f"the summary template does not fit a {kind} coordinator's input: the summary request with its "
+                f"reminder and {PR.FEEDBACK_RESERVE_BYTES} bytes for feedback take {fixed} of {self._budget} bytes")
+        share = PR.worst_reply_share(self._max_rounds, self._names(), footer, self._budget, text)
+        if share < PR.MIN_REPLY_SHARE_BYTES:
+            raise InvalidConfigError(
+                f"{len(self._participants)} participants are too many for a {kind} coordinator with this template: "
+                f"each reply would get {max(share, 0)} bytes of its {self._budget}-byte input, less than "
+                f"{PR.MIN_REPLY_SHARE_BYTES}")
+
+    def _first_input(self, requirement: str, marker: str) -> tuple[PR.ProtocolText, str]:
+        text = PR.ProtocolText({p.name: p.role for p in self._participants}, self._template, marker)
+        opening = text.opening(requirement, self._max_rounds, self._total_timeout, self._turn_timeout)
+        return text, opening + "\n" + text.reminder([PR.BRIEF], self._names(), None, None)
 
     def _check_requirement(self, requirement: object) -> str:
         if not isinstance(requirement, str):
@@ -584,7 +610,8 @@ class _Run:
                 self.add(sender=COORDINATOR, receiver=None, type_=MessageType.COORDINATOR_OUTPUT,
                          content={"output": None, "errors": [detail]}, status=MessageStatus.INVALID, source=None,
                          started_at=started, duration=duration)
-                text = self.text.aborted(str(reply)) + self.reminder(allowed)
+                text = PR.within_budget(self.text.aborted(_error(reply)["message"]), self.reminder(allowed),
+                                        self.d._budget)
                 continue
             reply_text = PR.utf8_safe(reply.text)  # first step on any agent text (D13)
             value, err = PR.extract_action(reply_text)
@@ -599,7 +626,7 @@ class _Run:
             self.add(sender=COORDINATOR, receiver=None, type_=MessageType.COORDINATOR_OUTPUT,
                      content={"output": reply_text, "errors": list(outcome.errors)}, status=MessageStatus.INVALID,
                      source=reply.source, started_at=started, duration=duration)
-            text = self.text.feedback(outcome.errors) + self.reminder(allowed)
+            text = PR.within_budget(self.text.feedback(outcome.errors), self.reminder(allowed), self.d._budget)
         return _INVALID
 
     def check_brief(self, action: PR.Action) -> PR.Outcome:
@@ -618,7 +645,7 @@ class _Run:
             try:
                 self.participant_prompt(name, PR.BRIEF_PROBE_QUESTION, None, brief=brief, first=True)
             except Exception as e:
-                errors.append(f"$.brief: the brief cannot be sent to participant {name!r}: {e}")
+                errors.append(f"$.brief: the brief cannot be sent to participant {name!r}: {_error(e)['message']}")
         if errors:
             return PR.Outcome(None, tuple(errors))
         return PR.Outcome(PR.Action(PR.BRIEF, {**action.data, "brief": brief}), ())
@@ -764,7 +791,7 @@ class _Run:
                 try:  # back to accepting input before the next dispatch (D13)
                     agent.interrupt()
                 except Exception as ie:
-                    unavailable, text = True, f"{e}; interrupt failed: {ie}"
+                    unavailable, text = True, f"{_error(e)['message']}; interrupt failed: {_error(ie)['message']}"
         except AgentBlockedError as e:
             status, text = MessageStatus.BLOCKED.value, _error(e)["message"]
         except AgentTurnAbortedError as e:
@@ -776,7 +803,7 @@ class _Run:
         except AgentNotFoundError as e:
             status, text, unavailable = MessageStatus.FAILED.value, _error(e)["message"], True
         except Exception as e:
-            status, text = MessageStatus.FAILED.value, f"{type(e).__name__}: {e}"
+            status, text = MessageStatus.FAILED.value, f"{type(e).__name__}: {_error(e)['message']}"
         end = _monotonic()
         return _Asked(name, status, text, source, started, end - t0, unavailable, end)
 

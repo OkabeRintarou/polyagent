@@ -1,0 +1,18 @@
+  >_ OpenAI Codex (v0.167.0)
+     /tmp/LAB_ROOT/w/…/a-rather-long-directory-name-segment/a-rather-long-directory-name-segment
+  permissions: YOLO mode
+
+  Tip: Maximize usage with GPT-6.1 Sol. Try it on complex work for near-Astra performance at a lower cost.
+
+
+› Reply with exactly one word: PONG
+
+
+• PONG
+
+  Worked for 3s • 10:26 AM
+
+
+› Ask Codex to do anything
+
+  <model> default Fast · /tmp/LAB_ROOT/w/a-rather-long-directory-name-segment/a-rather-long-…

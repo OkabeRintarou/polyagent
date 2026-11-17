@@ -22,9 +22,9 @@ def test_pong_and_a_multi_step_markdown_answer(agent_lab, kind):
     agent = agent_lab.start(kind, agent_lab.work(kind, files=FILES))
     source = "session_log" if kind in LOG_KINDS else "screen"
     first = agent.ask_reply(PONG, 180)
-    # codex holds its rollout file only after the first message (task 13.15): its first turn may be
-    # captured from the screen (D12).
-    assert "PONG" in first.text and first.source in ((source, "screen") if kind == "codex" else (source,))
+    # codex opens its rollout only after the first message; the library binds it after submitting (D12,
+    # task 13.15), so the first turn too comes from the session log.
+    assert "PONG" in first.text and first.source == source
     second = agent.ask_reply(MULTI, 300)
     assert second.source == source
     assert "41" in second.text and "17" in second.text

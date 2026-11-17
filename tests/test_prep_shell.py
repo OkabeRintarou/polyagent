@@ -309,3 +309,51 @@ def test_prepared_shell_writes_no_history(tmp_path, posix, custom):
 def test_history_file_is_unset_in_every_prepared_script():
     for spec in (AgentSpec(kind="copilot", env={"X": "1"}), RO_COPILOT, claude_spec(policy="full_auto")):
         assert "\\command unset HISTFILE 2>/dev/null" in L.prep_script(spec, K.adapter(spec.kind))
+
+
+@pytest.mark.skipif(not shutil.which("bash"), reason="needs bash")
+def test_pane_histfile_value_and_the_rc_file_limit(tmp_path):
+    """Task 13.36 (review T4), without herdr: an interactive bash given the value every pane gets
+    (`manager.PANE_ENV`) writes no history, the same shell without it does, and a startup file that sets
+    `HISTFILE` itself overrides it (the documented limit, D6). HOME is a temporary directory."""
+    from polyagent import manager
+
+    def shell(name, env_extra, rc=None):
+        home = tmp_path / name
+        home.mkdir()
+        if rc is not None:
+            (home / ".bashrc").write_text(rc)
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(home), **env_extra}
+        subprocess.run(["bash", "--noprofile", "-i"], input="echo MARK_HIST\nexit\n", env=env, capture_output=True,
+                       text=True, timeout=30)
+        return home
+
+    assert manager.PANE_ENV == {"HISTFILE": "/dev/null"}
+    control = shell("control", {})
+    assert "MARK_HIST" in (control / ".bash_history").read_text()
+    assert list(shell("pane", manager.PANE_ENV).iterdir()) == []
+    rc = shell("rc", manager.PANE_ENV, rc='HISTFILE="$HOME/rc_history"\n')
+    assert "MARK_HIST" in (rc / "rc_history").read_text()
+
+
+# ---- task 13.39: claude's self-update off, also from the preparation script (D6) ------------------------
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+@pytest.mark.parametrize("caller", [None, "0"])
+def test_claude_self_update_variable_is_exported_before_the_callers(shell, tmp_path, caller):
+    """The script exports DISABLE_AUTOUPDATER=1 before the caller's variables: a caller value of the same
+    name is the one the agent sees; read_only accepts the name in `env`."""
+    env = {"MY_VAR": "x"} if caller is None else {"MY_VAR": "x", "DISABLE_AUTOUPDATER": caller}
+    prov = ClaudeProvider.compatible("https://llm.example.com", auth_token=TOKEN)
+    spec = AgentSpec(kind="claude", policy="read_only", provider=prov, env=env)
+    from polyagent import policy as P
+
+    P.check_static(spec, tmp_path, "read_only")  # the name is not refused under read_only
+    script = L.prep_script(spec, K.adapter("claude"))
+    lines = script.splitlines()
+    first = next(i for i, ln in enumerate(lines) if "export DISABLE_AUTOUPDATER=" in ln)
+    assert first < next(i for i, ln in enumerate(lines) if "export MY_VAR=" in ln)
+    head, got, _, err = run(shell, script, tmp_path)
+    assert head == "__OK__", err
+    assert got["DISABLE_AUTOUPDATER"] == ("1" if caller is None else caller)

@@ -6,6 +6,7 @@ of ``AgentTimeoutError``, so any handle of the agent (also in another process) c
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import math
@@ -87,6 +88,9 @@ class _Source:
     mark: int = 0
     baseline: list[str] | None = None
     count: int = 0  # occurrences of the baseline block on the pre-submit screen (review N1)
+    # D12 "提交后再绑定" (codex): the agent processes (pid, start time) seen before submitting while none
+    # of them had a rollout open; looked at again after submitting, never once a log is adopted.
+    rebind: tuple[tuple[int, int], ...] | None = None
 
     def pending(self, echo: list[str]) -> dict[str, Any]:
         """D11: a log-bound turn carries its mark and no prompt text and no path (the handle binds the
@@ -111,6 +115,57 @@ def _check_timeout(timeout: object) -> float:
         raise InvalidConfigError("timeout must be a finite positive number of seconds")
     return float(timeout)
 
+
+
+def load_submission(path: Path) -> dict[str, Any] | None:
+    """A D11 submission record, or ``None`` when there is none; one that cannot be read or holds
+    unusable values (also numbers out of range) counts as absent and is removed."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        rec = json.loads(raw)
+        ok = (isinstance(rec, dict) and isinstance(rec.get("digest"), str)
+              and type(rec.get("mark")) is int and rec["mark"] >= 0
+              and type(rec.get("at")) in (int, float) and math.isfinite(float(rec["at"])))
+    except (ValueError, OverflowError, RecursionError):
+        ok = False
+    if not ok:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        return None
+    rec["at"] = float(rec["at"])
+    return rec
+
+
+def drop_submission(session: str, name: str) -> None:
+    """Remove agent ``name``'s submission record; the caller holds that name's lock (D11: a new agent
+    has submitted nothing)."""
+    with contextlib.suppress(OSError):
+        locks.submission_path(session, name).unlink()
+
+
+def drop_stale_submissions(session: str) -> None:
+    """Remove submission records older than ``CONFIRM_LIMIT``, each under its name's lock taken without
+    waiting; a held lock means an ask may have just written that record, so it is left (D11)."""
+    try:
+        files = list((locks.lock_dir(session) / locks.AGENT_LOCK_DIR).glob("*" + locks.SUBMISSION_SUFFIX))
+    except (OSError, InvalidConfigError):
+        return
+    for f in files:
+        name = f.name[: -len(locks.SUBMISSION_SUFFIX)]
+        try:
+            lock = locks.try_lock(session, name)
+        except InvalidConfigError:
+            continue
+        if lock is None:
+            continue
+        with lock:
+            rec = load_submission(f)
+            if rec is not None and time.time() - rec["at"] >= CONFIRM_LIMIT:
+                with contextlib.suppress(OSError):
+                    f.unlink()
 
 class Agent:
     """Handle of one agent started by polyagent (``PolyAgent.start`` / ``attach``)."""
@@ -213,14 +268,18 @@ class Agent:
 
     # ---- log binding (D12) --------------------------------------------------------
 
-    def _agent_pids(self) -> list[int]:
+    def _agent_processes(self) -> list[tuple[int, str]]:
+        """(pid, name) of the pane's foreground processes other than its shell."""
         try:
             info = self._h.pane_process_info(self.pane_id).get("process_info") or {}
         except HerdrError:
             return []
         shell = info.get("shell_pid")
-        return [p["pid"] for p in info.get("foreground_processes") or []
+        return [(p["pid"], str(p.get("name") or "")) for p in info.get("foreground_processes") or []
                 if isinstance(p, dict) and isinstance(p.get("pid"), int) and p.get("pid") != shell]
+
+    def _agent_pids(self) -> list[int]:
+        return [pid for pid, _ in self._agent_processes()]
 
     def _config_dir(self) -> Path:
         """The agent's configuration directory (D12). Only an answer read from the agent process's own
@@ -385,10 +444,8 @@ class Agent:
         return self._adapter.capability(K.SCREEN_CAPTURE).state == K.VERIFIED
 
     def _log_unavailable(self) -> ReplyNotFoundError:
-        task = self._adapter.capability(K.SCREEN_CAPTURE).task
-        return ReplyNotFoundError(f"the session log of agent {self.name} is unavailable and screen capture is not "
-                                  f"verified for {self.kind} (task {task}); no reply is taken from the screen",
-                                  self._visible())
+        return ReplyNotFoundError(f"the session log of agent {self.name} is unavailable and {self.kind} replies "
+                                  "are not taken from the screen", self._visible())
 
     def _visible(self) -> str:
         try:
@@ -410,34 +467,33 @@ class Agent:
 
     def _write_submission(self, digest: str, mark: int) -> dict[str, Any]:
         """Written before ``agent prompt`` while holding the ask lock: the prompt's digest, the log mark
-        before submission and the wall-clock time; never the prompt text. 0600, replaced atomically."""
+        before submission and the wall-clock time; never the prompt text. 0600, replaced atomically.
+        A failed write means nothing was submitted: ``AgentBusyError``, no temporary file left (D11)."""
         record = {"v": 1, "digest": digest, "mark": mark, "at": time.time()}
-        path = self._submission_file()
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        tmp = None
         try:
-            os.write(fd, json.dumps(record).encode())
-        finally:
-            os.close(fd)
-        os.replace(tmp, path)
+            path = self._submission_file()
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            try:
+                os.write(fd, json.dumps(record).encode())
+            finally:
+                os.close(fd)
+            os.replace(tmp, path)
+        except (OSError, InvalidConfigError) as e:
+            if tmp is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
+            raise AgentBusyError(f"could not write the submission record of agent {self.name} "
+                                 f"({type(e).__name__}); nothing was submitted") from None
         return record
 
     def _read_submission(self) -> dict[str, Any] | None:
         try:
-            raw = self._submission_file().read_bytes()
-        except (OSError, InvalidConfigError):
+            path = self._submission_file()
+        except InvalidConfigError:
             return None
-        try:
-            rec = json.loads(raw)
-            ok = (isinstance(rec, dict) and isinstance(rec.get("digest"), str)
-                  and type(rec.get("mark")) is int and rec["mark"] >= 0
-                  and type(rec.get("at")) in (int, float) and math.isfinite(rec["at"]))
-        except ValueError:
-            ok = False
-        if not ok:  # unusable: treated as absent and removed
-            self._drop_submission()
-            return None
-        return rec
+        return load_submission(path)
 
     def _drop_submission(self, only: dict[str, Any] | None = None) -> None:
         """Remove the record; with ``only``, just when it is still that record (another ask may have
@@ -449,22 +505,23 @@ class Agent:
                 if current.get("digest") != only["digest"] or current.get("at") != only["at"]:
                     return
             path.unlink()
-        except (OSError, ValueError, InvalidConfigError, AttributeError):
+        except (OSError, ValueError, InvalidConfigError, AttributeError, RecursionError):
             pass
 
     def _wait_submission(self, logsrc: LogAdapter, deadline: float, stop: _Stop) -> None:
         """D11: an earlier submission whose user message is not in the log yet counts as ``working``
         for up to ``CONFIRM_LIMIT`` seconds; once it appears, its turn is waited for as usual."""
-        first_seen = None
         while True:
             rec = self._read_submission()
             if rec is None:
                 return
-            if first_seen is None:
-                first_seen = time.monotonic()
-            age = time.time() - rec["at"]
-            if age < 0:  # submitted "in the future" (the clock was set back): taken as just submitted
-                age = time.monotonic() - first_seen
+            now = time.time()
+            if rec["at"] > now:  # submitted "in the future" (the clock was set back): from now on (D11)
+                try:
+                    rec = self._write_submission(rec["digest"], rec["mark"])
+                except AgentBusyError:
+                    rec = {**rec, "at": now}  # not kept: it ages within this ask only
+            age = now - rec["at"]
             if age >= CONFIRM_LIMIT:  # that prompt never arrived
                 self._drop_submission(rec)
                 return
@@ -525,7 +582,45 @@ class Agent:
                                      "nothing was submitted")
             baseline = capture.baseline(screen)
             count = capture.count(screen, baseline)
-        return _Source(log=logsrc, mark=logsrc.mark() if logsrc else 0, baseline=baseline, count=count), info
+        rebind = self._rebind_identity() if logsrc is None else None
+        return _Source(log=logsrc, mark=logsrc.mark() if logsrc else 0, baseline=baseline, count=count,
+                       rebind=rebind), info
+
+    # -- D12 "提交后再绑定" (codex)
+    def _rebind_identity(self) -> tuple[tuple[int, int], ...] | None:
+        """Before submitting: the agent processes and their start times, when this kind binds its log by
+        the files its process holds and none is held yet; ``None`` otherwise."""
+        if self._adapter.log_binding != "rollout_fd":
+            return None
+        procs = self._agent_processes()
+        # The agent process itself: codex runs short-lived children (git) in the same foreground group,
+        # which must not count as "the process changed" when they exit (phase 9).
+        pids = [pid for pid, name in procs if name == self._adapter.executable]
+        ids = tuple((pid, locate.process_start(pid)) for pid in pids)
+        if not ids or any(start is None for _, start in ids) or locate.open_rollouts([pid for pid, _ in procs]):
+            return None
+        return ids  # type: ignore[return-value]
+
+    def _try_rebind(self, src: _Source, digest: str) -> None:
+        """After submitting: adopt the rollout the same processes now hold, when it can only be this
+        prompt's turn (exactly one file; this prompt's digest exactly once; before it nothing but codex's
+        environment context). Adopted, the turn is read from the log from position 0 (D12)."""
+        if src.log is not None or not src.rebind:
+            return
+        if any(locate.process_start(pid) != start for pid, start in src.rebind):
+            src.rebind = None  # another process now: this turn stays with the screen
+            return
+        found = locate.open_rollouts([pid for pid, _ in src.rebind])
+        if len(found) != 1:
+            return
+        log = ADAPTERS[self.kind](found[0])
+        verdict = log.first_prompt(digest)  # type: ignore[attr-defined]
+        if verdict is None:
+            return
+        src.rebind = None
+        if verdict:
+            src.log, src.mark = log, 0
+            self._log_path, self._log, self._log_bound_to = found[0], log, found[0]
 
     def _wait_log_idle(self, logsrc: LogAdapter, deadline: float, stop: _Stop) -> None:
         while logsrc.turn_open():
@@ -560,12 +655,13 @@ class Agent:
             if remaining <= 0:  # nothing submitted yet (D11): busy, not a timeout with a pending turn
                 raise AgentBusyError(f"the timeout elapsed before agent {self.name} could take the prompt; "
                                      "nothing was submitted")
+            if not trusted:  # written before submitting; a failed write submits nothing (D11)
+                record = self._write_submission(digest, src.mark)
             stop.submitted = True
             try:
                 if trusted:
                     self._guard(self._h.agent_prompt, stop, self.name, sent, remaining, cancel=stop)
                 else:  # no --wait, no --timeout; delivery by the log only (D11)
-                    record = self._write_submission(digest, src.mark)
                     self._guard(self._h.agent_prompt, stop, self.name, sent, wait=False, cancel=stop)
                     self._confirm(src, digest, sent, before, deadline, stop, log_only=True)
                     self._drop_submission(record)
@@ -591,6 +687,7 @@ class Agent:
         echo = sent.splitlines()
         while True:
             self._raise_if_stopped(stop)
+            self._try_rebind(src, digest)
             if src.log is not None and src.log.judge(src.mark, digest).outcome is not Outcome.NOT_SEEN:
                 return
             if not log_only:
@@ -623,6 +720,7 @@ class Agent:
         settled_at: float | None = None
         while True:
             self._raise_if_stopped(stop)
+            self._try_rebind(src, digest)
             state = self._guard(self._h.agent_get, stop, self.name).get("agent_status")
             if state == "blocked":
                 self._on_blocked(denials, stop)
@@ -685,6 +783,7 @@ class Agent:
                 raise
 
     def _timeout(self, src: _Source, digest: str, sent: str, why: str, state: Any) -> AgentTimeoutError:
+        self._try_rebind(src, digest)  # a log adopted by now makes the pending turn a log turn (D12)
         try:
             diag = self._h.agent_explain(self.name)
             diagnostics = _diagnostics(str(diag.get("explanation") or ""))

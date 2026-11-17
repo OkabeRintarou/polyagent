@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Mapping
+from typing import Callable, Mapping
 
 from ._rules import KINDS
 
@@ -102,10 +102,11 @@ class PromptGuard:
 
 @dataclass(frozen=True)
 class FooterBlock:
-    """A bottom footer block: it starts at the last line of the screen read matching ``input_line``
-    (the input line), is followed by at most ``max_after`` non-blank lines, and, when ``status`` is
-    not empty, one of those lines matches a status marker. A screen without such a block is not in a
-    recognizable input state."""
+    """A bottom footer block (D12): it starts at the last line of the screen read matching ``input_line``
+    (the input line), which must not match ``input_exclude``; it is followed by ``min_after`` to
+    ``max_after`` non-blank lines; when ``status`` is not empty one of those lines matches a status
+    marker, and when ``status_line`` is given every one of them satisfies it. A screen without such a
+    block is not in a recognizable input state."""
 
     input_line: re.Pattern[str]
     status: tuple[re.Pattern[str], ...] = ()
@@ -113,8 +114,22 @@ class FooterBlock:
     min_after: int = 0
     # The input line must not match this (codex: a numbered option of a selection dialog, D12).
     input_exclude: re.Pattern[str] | None = None
-    # No line after the input line may match this (codex: a dialog's key hints `enter`/`esc`, D12).
-    after_exclude: re.Pattern[str] | None = None
+    # A check of each line after the input line by its fields (codex's status line, D12 rule 4).
+    status_line: Callable[[str], bool] | None = None
+
+
+_KEY_HINT_RE = re.compile(r"(?i)\b(?:enter|esc)\b")
+
+
+def codex_status_line(line: str) -> bool:
+    """D12 rule 4 (phase 8): ` · ` separated fields, at least two; the first (model and effort) without a
+    standalone `enter`/`esc`; the second a directory: `/` not followed by a space, `~` or `~/…`. The
+    working directory and the session title are free text and are not searched for key names."""
+    fields = line.strip().split(" · ")
+    if len(fields) < 2 or _KEY_HINT_RE.search(fields[0]):
+        return False
+    d = fields[1]
+    return (d.startswith("/") and not d.startswith("/ ")) or d == "~" or d.startswith("~/")
 
 
 # ---- read_only extra-argument whitelist (D8) ------------------------------------------
@@ -183,6 +198,10 @@ class KindAdapter:
     # The visible screen of an agent ready for input. Where herdr's status is not reliable (D11) the
     # start-up dialog handling waits for it before taking `idle` as ready (task 13.20).
     ready_screen: re.Pattern[str] | None = None
+    # Fixed, non-credential variables given to the pane's shell when its workspace is created (herdr
+    # `--env`), and exported again by the preparation script before the caller's variables, so a caller
+    # value of the same name wins (D6: claude's self-update, phase 8). They never make a start prepare.
+    pane_env: Mapping[str, str] = field(default_factory=dict)
     trust_by_flag: bool = False  # cursor: `--trust` instead of a dialog (persisted, D9)
     secret_env_flag: str | None = None  # hides injected variable names from tools under read_only
     notes: tuple[str, ...] = field(default=())
@@ -233,7 +252,7 @@ CLAUDE_FORM_TOOLS = ("AskUserQuestion", "EnterPlanMode", "ExitPlanMode")
 # DesignSync (task 13.2): reads and updates the user's claude.ai design projects over the network; loadable
 # through the deferred-tool search unless denied.
 CLAUDE_READ_ONLY_DENY = ("Edit", "Write", "NotebookEdit", "Bash", "WebFetch", "WebSearch", "DesignSync",
-                         *CLAUDE_FORM_TOOLS)
+                         "ReportFindings", *CLAUDE_FORM_TOOLS)
 CLAUDE_READ_ONLY_ALLOW = ("Read", "Grep", "Glob")
 # copilot tools that start background work reported in later, prompt-less turns (task 13.1).
 # `bash` with mode=async has the same effect but cannot be excluded on its own (phase-3 finding P3-1).
@@ -263,6 +282,9 @@ ADAPTERS: dict[str, KindAdapter] = {
         ),
         full_auto_args=("--dangerously-skip-permissions",),
         read_only_lists=(
+            # Task 13.33: only these built-in tools exist for the model; a tool a new CLI version adds is
+            # not available by default. The deny list below stays as the second layer (D8).
+            ("--tools", (",".join(CLAUDE_READ_ONLY_ALLOW),)),
             ("--allowedTools", CLAUDE_READ_ONLY_ALLOW),
             ("--disallowedTools", CLAUDE_READ_ONLY_DENY + CLAUDE_ASYNC_TOOLS),
         ),
@@ -273,7 +295,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             MCP_ALLOW: Capability(VERIFIED, note="server definitions come from AgentSpec.mcp_config"),
             LOG_ADAPTER: Capability(VERIFIED),
             INTERRUPT_KEY: Capability(VERIFIED),
-            SCREEN_CAPTURE: Capability(UNVERIFIED, task="13.16", note="footer markers inferred from the UI, no screen samples"),
+            SCREEN_CAPTURE: Capability(UNSUPPORTED, note="samples show the echo with the input line's prefix; no footer rule (D12)"),
             # Task 13.2 (local stub): the denied tools are neither offered nor found by the deferred-tool search.
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="async tools denied, also for the deferred-tool search"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(VERIFIED, note="async tools denied, also for the deferred-tool search"),
@@ -290,6 +312,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         always_forbidden_env_prefixes=(),
         permission_env_vars=(),
         prestart_env={},
+        pane_env={"DISABLE_AUTOUPDATER": "1"},  # claude ignores autoUpdates=false in its config (P8-5)
         read_only_safe_options=(_opt("--effort", r"low|medium|high|xhigh|max"),),
         repo_config_paths=(),
         excludes_project_config=True,
@@ -306,7 +329,6 @@ ADAPTERS: dict[str, KindAdapter] = {
         deny_key="esc",
         interrupt_key="esc",
         log_binding="session_id",
-        footer=(re.compile(r"^\s*─{10,}"), re.compile(r"^\s*❯"), re.compile(r"^\s*\? for shortcuts")),
     ),
     "copilot": KindAdapter(
         kind="copilot",
@@ -333,7 +355,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             MCP_ALLOW: Capability(UNVERIFIED, task="13.3", note="third-party MCP disabled by the account's org policy"),
             LOG_ADAPTER: Capability(VERIFIED),
             INTERRUPT_KEY: Capability(UNVERIFIED, task="13.3"),
-            SCREEN_CAPTURE: Capability(UNVERIFIED, task="13.16", note="footer markers inferred from the UI, no screen samples"),
+            SCREEN_CAPTURE: Capability(UNSUPPORTED, note="samples show the echo with the input line's prefix; no footer rule (D12)"),
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="the tool allow-list has no background tool (task 13.1)"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(
                 VERIFIED, task="13.10",
@@ -370,7 +392,6 @@ ADAPTERS: dict[str, KindAdapter] = {
         interrupt_key="esc",
         log_binding="session_id",
         secret_env_flag="--secret-env-vars",
-        footer=(re.compile(r"^\s*─{10,}"), re.compile(r"^\s*❯\s*$")),
     ),
     "codex": KindAdapter(
         kind="codex",
@@ -424,9 +445,9 @@ ADAPTERS: dict[str, KindAdapter] = {
         # finding), and its selection dialogs use `›` as their cursor. D12 (task 13.31): the last `›` line,
         # not a numbered option, followed by exactly one non-blank line: the status line, with ` · `
         # separated fields and no `enter`/`esc` key hint.
-        footer_block=FooterBlock(re.compile(r"^\s*›(?: |\s*$)"), status=(re.compile(r" · "),), max_after=1,
-                                 min_after=1, input_exclude=re.compile(r"^\s*›\s*\d+\."),
-                                 after_exclude=re.compile(r"(?i)\b(?:enter|esc)\b")),
+        footer_block=FooterBlock(re.compile(r"^›(?: |\s*$)"), max_after=1,
+                                 min_after=1, input_exclude=re.compile(r"^›\s*\d+\."),
+                                 status_line=codex_status_line),
     ),
     "cursor": KindAdapter(
         kind="cursor",

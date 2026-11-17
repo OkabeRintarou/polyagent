@@ -26,6 +26,17 @@ BRIEF_PROBE_QUESTION = "Is the brief clear?"  # used to check that a brief can b
 MAX_FEEDBACK_ERRORS = 20
 MAX_ERROR_CHARS = 300
 TRUNCATION_NOTE_RESERVE = 96  # bytes kept per reply for the truncation note
+# D13 "协调者输入的长度" (phase 8): room kept for feedback on top of the summary input, and the least
+# share of a reply in the worst case; both checked when a Discussion is built.
+FEEDBACK_RESERVE_BYTES = 1024
+# Why the summary is asked for, by the reason the dispatch phase ended.
+SUMMARY_REASONS = {
+    "finished": "You finished the discussion.",
+    "budget_exhausted": "The discussion budget is exhausted; no more questions can be dispatched.",
+    "coordinator_invalid": "Too many invalid actions; no more questions can be dispatched.",
+    "participants_unavailable": "No participant is available any more; no more questions can be dispatched.",
+}
+MIN_REPLY_SHARE_BYTES = 1024
 
 # Removed from one agent's output before it becomes another agent's input (agent-discussion spec,
 # "星型信息流"): C0 except tab and newline, DEL, C1. CR is normalised first.
@@ -414,12 +425,7 @@ class ProtocolText:
                      "Do not use tools that need approval; output only the action.")
 
     def summary_request(self, reason: str) -> str:
-        why = {
-            "finished": "You finished the discussion.",
-            "budget_exhausted": "The discussion budget is exhausted; no more questions can be dispatched.",
-            "coordinator_invalid": "Too many invalid actions; no more questions can be dispatched.",
-            "participants_unavailable": "No participant is available any more; no more questions can be dispatched.",
-        }[reason]
+        why = SUMMARY_REASONS[reason]
         return "\n".join([
             why,
             "Now write the summary of the discussion and output it as the summary action.",
@@ -467,12 +473,8 @@ class RoundResult:
     unavailable: bool = False
 
 
-def fit_results(round_no: int, results: Sequence[RoundResult], header: str, footer: str,
-                reply_limit: int, budget: int = INPUT_BUDGET_BYTES, *, text: ProtocolText | None = None,
-                forward: Callable[[str], str] = clean) -> str:
-    """One coordinator input: ``header``, the round's results, ``footer``. Each reply goes through
-    ``forward`` (normalise, remove control characters, redact) and is then cut: replies share what is
-    left of ``budget`` after the fixed text, each at most ``min(reply_limit, share)`` bytes (D13)."""
+def _blocks(results: Sequence[RoundResult], text: ProtocolText | None,
+            forward: Callable[[str], str]) -> list[tuple[str, str | None]]:
     tag = text.tag if text is not None else (lambda s: f"--- {s} ---")
     blocks: list[tuple[str, str | None]] = []
     for r in results:
@@ -482,12 +484,42 @@ def fit_results(round_no: int, results: Sequence[RoundResult], header: str, foot
             gone = " It is now unavailable." if r.unavailable else ""
             blocks.append((tag(f"{r.name}: no reply ({r.status}): the participant "
                                f"{describe_failure(r.status)}.{gone}"), None))
-    title = f"Results of dispatch round {round_no}:"
-    fixed = "\n".join([header, title] + [h for h, _ in blocks] + [footer]) if header else \
-        "\n".join([title] + [h for h, _ in blocks] + [footer])
+    return blocks
+
+
+def _share(header: str, title: str, blocks: list[tuple[str, str | None]], footer: str, budget: int) -> int:
+    """Bytes each reply body may take: what the fixed text leaves of ``budget``, shared (D13)."""
+    fixed = "\n".join(([header] if header else []) + [title] + [h for h, _ in blocks] + [footer])
     bodies = [b for _, b in blocks if b is not None]
     overhead = _b(fixed) + len(bodies) * (TRUNCATION_NOTE_RESERVE + 2)
-    share = (budget - overhead) // len(bodies) if bodies else 0
+    return (budget - overhead) // len(bodies) if bodies else 0
+
+
+def worst_reply_share(round_no: int, names: Sequence[str], footer: str, budget: int, text: ProtocolText) -> int:
+    """The share of each reply when every participant in ``names`` answers in one input ending with
+    ``footer`` (D13: the summary input is the worst case)."""
+    blocks = _blocks([RoundResult(n, "ok", "") for n in names], text, clean)
+    return _share("", f"Results of dispatch round {round_no}:", blocks, footer, budget)
+
+
+def within_budget(body: str, footer: str, budget: int) -> str:
+    """``body`` cut on a character boundary, with a note, so that ``body + footer`` fits ``budget``
+    (D13: feedback and the aborted-turn notice; the reminder in ``footer`` is never cut)."""
+    room = budget - _b(footer)
+    if _b(body) <= room:
+        return body + footer
+    return truncate_utf8(body, room - TRUNCATION_NOTE_RESERVE) + footer
+
+
+def fit_results(round_no: int, results: Sequence[RoundResult], header: str, footer: str,
+                reply_limit: int, budget: int = INPUT_BUDGET_BYTES, *, text: ProtocolText | None = None,
+                forward: Callable[[str], str] = clean) -> str:
+    """One coordinator input: ``header``, the round's results, ``footer``. Each reply goes through
+    ``forward`` (normalise, remove control characters, redact) and is then cut: replies share what is
+    left of ``budget`` after the fixed text, each at most ``min(reply_limit, share)`` bytes (D13)."""
+    blocks = _blocks(results, text, forward)
+    title = f"Results of dispatch round {round_no}:"
+    share = _share(header, title, blocks, footer, budget)
     limit = max(min(reply_limit, share), 0)
     lines = [header] if header else []
     lines.append(title)

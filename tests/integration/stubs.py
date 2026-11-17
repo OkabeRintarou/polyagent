@@ -129,6 +129,8 @@ class AnthropicStub:
                 # Task 13.2: ask claude's deferred-tool search for a tool by name.
                 "DO_TOOLSEARCH": ("ToolSearch", {"query": f"select:{arg}", "max_results": 5}),
                 "DO_TOOLSEARCHKW": ("ToolSearch", {"query": arg, "max_results": 10}),
+                # Task 13.33: call the non-functional placeholder claude offers next to `--tools`.
+                "DO_PLACEHOLDER": ("DeferredToolPlaceholder", {}),
             }.get(kw)
             if call:
                 return self._stream(req, body, [("tool_use", call)], "tool_use")

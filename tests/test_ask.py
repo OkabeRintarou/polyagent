@@ -756,7 +756,7 @@ def test_claude_log_created_after_binding_is_picked_up(tmp_path):
 
 def test_claude_log_that_never_appears_is_reply_not_found(tmp_path):
     """Scenario: 屏幕截取规则未经验证的 kind — no log file after the turn ended: the log is unavailable,
-    and claude's screen capture has no samples (task 13.16), so no text is taken from the screen."""
+    and claude takes no reply from the screen (unsupported, task 13.16)."""
     c, agent, path = make(tmp_path)
     c.recent = "older output\n"
 
@@ -768,7 +768,8 @@ def test_claude_log_that_never_appears_is_reply_not_found(tmp_path):
     c.screens = ["visible"]
     with pytest.raises(ReplyNotFoundError) as ei:
         agent.ask_reply("hello", 5)
-    assert "unavailable" in str(ei.value) and "13.16" in str(ei.value) and ei.value.screen == "visible"
+    assert "session log" in str(ei.value) and "unavailable" in str(ei.value) and ei.value.screen == "visible"
+    assert "13.16" not in str(ei.value) and "verified" not in str(ei.value)  # unsupported, not pending (13.16)
     assert not path.exists()
 
 
@@ -1172,20 +1173,32 @@ def test_expired_record_is_ignored_and_removed(tmp_path):
     assert agent.ask("q", 2) == "fresh" and not record_file().exists()
 
 
-def test_record_from_the_future_counts_as_just_submitted(tmp_path, monkeypatch):
-    monkeypatch.setattr(A, "CONFIRM_LIMIT", 0.4)
+def test_record_from_the_future_is_aged_from_the_first_ask_that_sees_it(tmp_path, monkeypatch):
+    """Task 13.32 / phase-7 review C3: the clock was set back; the record's time is rewritten to now when
+    first seen, so asks shorter than the limit stop waiting once the limit has passed in total."""
+    monkeypatch.setattr(A, "CONFIRM_LIMIT", 0.6)
     c, agent, path = make(tmp_path, kind="copilot")
     c.on_prompt = answer_copilot(path, "later")
     write_record(time.time() + 3600)
-    with pytest.raises(AgentBusyError):
-        agent.ask("q", 0.2)
-    started = time.monotonic()
-    assert agent.ask("q", 5) == "later"
-    assert time.monotonic() - started >= 0.4  # waited the limit from first sight, not until the future time
+    t0 = time.time()
+    busy = 0
+    while True:
+        try:
+            reply = agent.ask("q", 0.2)
+            break
+        except AgentBusyError:
+            busy += 1
+            if busy == 1:
+                at = json.loads(record_file().read_text())["at"]
+                assert t0 <= at <= time.time()  # rewritten to the time it was first seen
+            assert busy < 8, "the record from the future never expired"
+    assert reply == "later" and busy >= 2 and time.time() - t0 >= 0.6
 
 
 @pytest.mark.parametrize("content", ["not json", json.dumps({"digest": 1}), json.dumps({"v": 1, "digest": "d",
-                                                                                      "mark": -1, "at": 1.0})])
+                                                                                      "mark": -1, "at": 1.0}),
+                                     json.dumps({"v": 1, "digest": "d", "mark": 0, "at": 10 ** 400}),  # 13.32
+                                     "[" * 100_000 + "]" * 100_000])
 def test_malformed_record_is_ignored(tmp_path, content):
     c, agent, path = make(tmp_path, kind="copilot")
     c.on_prompt = answer_copilot(path, "ok")
@@ -1245,3 +1258,183 @@ def test_prompt_left_in_the_input_box_raises_instead_of_returning_the_status_lin
     c.on_prompt = on_prompt
     with pytest.raises((ReplyNotFoundError, PromptNotDeliveredError)):
         agent.ask("What is the answer?", 2)
+
+
+# ---- task 13.32: the rest of the submission record (D11) --------------------------------------------
+
+
+def test_failed_record_write_submits_nothing_and_leaves_no_temporary_file(tmp_path, monkeypatch):
+    readonly = tmp_path / "ro"
+    readonly.mkdir()
+    readonly.chmod(0o500)
+    monkeypatch.setattr(A.locks, "submission_path", lambda session, name: readonly / f"{name}.submitted")
+    c, agent, path = make(tmp_path, kind="copilot")
+    c.on_prompt = answer_copilot(path, "x")
+    try:
+        with pytest.raises(AgentBusyError, match="submission record"):
+            agent.ask("q", 2)
+        assert not c.args_of("agent_prompt") and list(readonly.iterdir()) == []
+    finally:
+        readonly.chmod(0o700)
+
+
+def test_record_is_removed_when_herdr_reports_blocked(tmp_path):
+    """herdr sent nothing (`agent_blocked`): no record of a submission that did not happen."""
+    from fakeclient import herr
+    from polyagent import herdr as H
+
+    c, agent, path = make(tmp_path, kind="copilot")
+
+    def on_prompt(fake, name, text, wait):
+        assert record_file().exists()  # written before submitting
+        fake.agents[name]["agent_status"] = "blocked"
+        return herr(H.AGENT_BLOCKED, "blocked")
+
+    c.on_prompt = on_prompt
+    with pytest.raises(AgentBlockedError):
+        agent.ask("q", 2)
+    assert not record_file().exists()
+
+
+def test_removing_its_own_record_leaves_a_newer_one(tmp_path):
+    c, agent, path = make(tmp_path, kind="copilot")
+    mine = agent._write_submission("a" * 64, 0)
+    newer = {"v": 1, "digest": "b" * 64, "mark": 3, "at": time.time() + 1}
+    record_file().write_text(json.dumps(newer))
+    agent._drop_submission(mine)
+    assert json.loads(record_file().read_text()) == newer
+    agent._drop_submission(newer)
+    assert not record_file().exists()
+
+
+# ---- task 13.15: codex, bind the log after submitting (D12 "提交后再绑定") ---------------------------------
+
+CODEX_IDLE = "› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
+CODEX_SAMPLE = Path(__file__).parent / "fixtures" / "logs" / "codex" / "long-prompts.rollout.jsonl"
+PONG_PROMPT = "Reply with exactly one word: PONG"
+
+
+def _sample(turns):
+    """The first ``turns`` turns of the real codex rollout (each ends with `task_complete`)."""
+    out, done = [], 0
+    for line in CODEX_SAMPLE.read_text().splitlines(keepends=True):
+        if done == turns:
+            break
+        out.append(line)
+        if '"task_complete"' in line:
+            done += 1
+    return out
+
+
+def _codex(tmp_path, monkeypatch, lines, prompt_reply="SCREEN REPLY", starts=(777,), files=1):
+    """A codex handle with no rollout before submitting; submitting writes ``lines`` to a rollout that
+    the agent process (pid 4242) then holds. ``starts``: successive start times read for that pid. A
+    `git` child (pid 5000) is in the foreground group before submitting and gone after it (phase 9)."""
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    seen = {"submitted": False, "open": 0, "start": 0}
+    agent._agent_processes = lambda: [(4242, "codex")] + ([] if seen["submitted"] else [(5000, "git")])  # type: ignore[method-assign]
+    rollout = tmp_path / "rollout-2026-11-17T00-00-00-x.jsonl"
+    starts = list(starts)
+
+    def process_start(pid, root="/proc"):
+        if pid == 5000:  # the git child: gone after submitting
+            return None if seen["submitted"] else 999
+        seen["start"] += 1
+        return starts.pop(0) if len(starts) > 1 else starts[0]
+
+    def open_rollouts(pids, root="/proc"):
+        seen["open"] += 1
+        assert 4242 in pids
+        return [str(rollout)] * files if seen["submitted"] else []
+
+    monkeypatch.setattr(A.locate, "process_start", process_start)
+    monkeypatch.setattr(A.locate, "open_rollouts", open_rollouts)
+    c.recent = CODEX_IDLE
+
+    def on_prompt(fake, name, text, wait):
+        rollout.write_text("".join(lines))
+        seen["submitted"] = True
+        fake.recent = f"› {text}\n\n• {prompt_reply}\n\n" + CODEX_IDLE
+        fake.set_status(name, "done")
+
+    c.on_prompt = on_prompt
+    return c, agent, seen
+
+
+def test_codex_first_turn_is_read_from_the_rollout_it_opens_after_submitting(tmp_path, monkeypatch):
+    """Scenario: 会话日志在提交之后才出现 — the real first turn (environment context, then the prompt)."""
+    c, agent, seen = _codex(tmp_path, monkeypatch, _sample(1))
+    r = agent.ask_reply(PONG_PROMPT, 5)
+    assert (r.text, r.source) == ("PONG", "session_log")
+    assert agent._log_path is not None and agent._log_path.endswith(".jsonl")  # bound for the next asks
+
+
+def test_codex_rollout_with_an_earlier_turn_is_not_adopted(tmp_path, monkeypatch):
+    """Scenario: 提交之后出现的日志里已有别的回合 — the second prompt of the sample, after an ended turn."""
+    multi = ("Use your file tools to read alpha.txt and beta.txt in the current directory, then answer with a "
+             "markdown bullet list with one bullet per file, each giving the file name in bold and its number.")
+    c, agent, seen = _codex(tmp_path, monkeypatch, _sample(2))
+    r = agent.ask_reply(multi, 5)
+    assert (r.text, r.source) == ("SCREEN REPLY", "screen")
+
+
+def test_codex_rollout_where_the_prompt_occurs_twice_is_not_adopted(tmp_path, monkeypatch):
+    first = _sample(1)
+    user = next(ln for ln in first if PONG_PROMPT in ln and '"role": "user"' in ln)
+    lines = first[:first.index(user) + 1] + [user] + first[first.index(user) + 1:]
+    c, agent, seen = _codex(tmp_path, monkeypatch, lines)
+    assert agent.ask_reply(PONG_PROMPT, 5).source == "screen"
+
+
+def test_codex_process_holding_two_rollouts_is_not_adopted(tmp_path, monkeypatch):
+    c, agent, seen = _codex(tmp_path, monkeypatch, _sample(1), files=2)
+    assert agent.ask_reply(PONG_PROMPT, 5).source == "screen"
+
+
+def test_codex_process_that_changed_is_not_looked_at_again(tmp_path, monkeypatch):
+    """A different start time for the pid (the pid was reused): the turn stays with the screen and the
+    rollouts are not looked for any more."""
+    c, agent, seen = _codex(tmp_path, monkeypatch, _sample(1), starts=(777, 888))
+    assert agent.ask_reply(PONG_PROMPT, 5).source == "screen"
+    assert seen["open"] == 1  # only the pre-submit look
+
+
+def test_codex_bound_before_submitting_does_not_take_this_path(tmp_path, monkeypatch):
+    c, agent, path = make(tmp_path, kind="codex")
+    path.write_text("".join(_sample(1)))
+    calls = []
+    monkeypatch.setattr(A.locate, "process_start", lambda pid, root="/proc": calls.append(pid) or 1)
+
+    def on_prompt(fake, name, text, wait):
+        with open(path, "a") as f:
+            f.write("".join(_sample(1)))
+        fake.set_status(name, "done")
+
+    c.on_prompt = on_prompt
+    assert agent.ask_reply(PONG_PROMPT, 5).source == "session_log"
+    assert calls == []
+
+
+def test_codex_unrecognized_screen_still_submits_nothing(tmp_path, monkeypatch):
+    c, agent, seen = _codex(tmp_path, monkeypatch, _sample(1))
+    c.recent = (Path(__file__).parent / "fixtures/screens/codex/trust-dialog.txt").read_text()
+    with pytest.raises(AgentBusyError):
+        agent.ask(PONG_PROMPT, 2)
+    assert not c.args_of("agent_prompt") and not seen["submitted"]
+
+
+def test_codex_timeout_after_adoption_gives_a_log_pending(tmp_path, monkeypatch):
+    """`pending` of an adopted turn: from the log at position 0; a screen `pending` is not rebound."""
+    lines = [ln for ln in _sample(1) if '"task_complete"' not in ln]  # the turn has not ended
+    c, agent, seen = _codex(tmp_path, monkeypatch, lines)
+    c.on_prompt, real = None, c.on_prompt
+
+    def slow(fake, name, text, wait):
+        real(fake, name, text, wait)
+        fake.set_status(name, "working")
+        return herr(H.TIMEOUT, "timeout")
+
+    c.on_prompt = slow
+    with pytest.raises(AgentTimeoutError) as ei:
+        agent.ask(PONG_PROMPT, 0.5)
+    assert {k: ei.value.pending[k] for k in ("source", "mark")} == {"source": "session_log", "mark": 0}

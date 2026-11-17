@@ -76,3 +76,15 @@ def open_rollouts(pids: Iterable[int], root: str = "/proc") -> list[str]:
             if ROLLOUT_RE.search(os.path.basename(target)) and target not in found:
                 found.append(target)
     return found
+
+
+def process_start(pid: int, root: str = "/proc") -> int | None:
+    """Start time of ``pid`` (clock ticks since boot, ``stat`` field 22): with the pid it identifies the
+    process, so a reused pid is told apart (D12 "提交后再绑定"). ``None`` when it cannot be read."""
+    try:
+        with open(os.path.join(root, str(pid), "stat"), "rb") as f:
+            data = f.read()
+        fields = data[data.rindex(b")") + 2:].split()
+        return int(fields[19])
+    except (OSError, ValueError, IndexError):
+        return None

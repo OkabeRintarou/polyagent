@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
+from polyagent import _launch
 from polyagent import DEFAULT_TEMPLATE, Discussion, DiscussionRecord, Participant
 from polyagent.template import instance_errors
 
@@ -87,6 +89,9 @@ def _settled_leftovers(lab, discussion_id: str) -> tuple[list[str], list[str]]:
 
 
 def test_discussion_end_to_end_and_cancel(agent_lab):
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    if shell not in _launch.POSIX_SHELLS:  # read_only members need a POSIX pane shell (D6)
+        pytest.skip(f"the pane shell {shell!r} is refused for read_only members (task 13.17)")
     for kind in ("claude", "copilot"):
         require_kind(kind, "read_only")
         agent_lab.prepare(kind)
@@ -114,6 +119,7 @@ def test_discussion_end_to_end_and_cancel(agent_lab):
     assert rec.summary is not None and instance_errors(DEFAULT_TEMPLATE.schema, rec.summary) == []
     assert DiscussionRecord.from_dict(json.loads(json.dumps(rec.to_dict()))) == rec
     replies = [m for m in rec.messages if m.type == "reply"]
+    assert any(m.status == "ok" for m in replies), summary  # the participants did answer (review T1)
     assert replies and all(m.reply_source in ("session_log", "screen") for m in replies if m.status == "ok")
     assert {m.sender for m in replies if m.status == "ok"} <= {"reviewer", "builder"}
     coordinator_msgs = [m for m in rec.messages if m.sender == "coordinator"]

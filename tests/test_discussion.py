@@ -1476,7 +1476,8 @@ def test_internal_error_in_each_phase(clock, tmp_path, monkeypatch, caplog, phas
     elif phase == "dispatch":
         _inject(monkeypatch, PR, "fit_results", lambda *a, **k: True)
     else:
-        _inject(monkeypatch, PR.ProtocolText, "summary_request", lambda *a, **k: True)
+        # Only in a run: the construction-time budget check (13.38) uses a placeholder marker.
+        _inject(monkeypatch, PR.ProtocolText, "summary_request", lambda self, *a, **k: self.marker != "0" * 16)
     f, d = setup(clock, tmp_path, [brief(), dispatch(("critic", "q")), finish(), summary()],
                  specs={"critic": copilot(env={"PROJECT_TOKEN": PART_TOKEN})})
     events = []
@@ -1841,7 +1842,193 @@ def test_a_copilot_coordinator_gets_inputs_it_takes_as_text(clock, tmp_path):
     for p in coord(f).prompts:
         assert len(p.encode()) <= limit and _prompt.sanitize(K.adapter("copilot"), p)
     assert {m.sender: m.content for m in rec.messages if m.type == "reply"} == big  # the record keeps all
+    nxt = coord(f).prompts[2]  # both replies are in it, each cut to its share with a note (review T5)
+    for n in big:
+        body = nxt.split(tag(f, f"reply from {n}") + "\n", 1)[1]
+        shown = re.search(r"\[truncated by polyagent: showing (\d+) of 9000[67] bytes\]", body)
+        assert shown and 3000 < int(shown.group(1)) < limit // 2 and body.startswith("汉" * 1000)
     f, d = setup(clock, tmp_path, [], coordinator=copilot())
     with pytest.raises(InvalidConfigError, match=f"{limit} bytes"):
         d.run("x" * (limit - 100))
     assert f.started == 0
+
+
+def test_a_requirement_that_does_not_fit_never_takes_the_run_flag(clock, tmp_path):
+    """Phase-8 review C4: a call refused for its configuration does not hold "already run", not even
+    briefly (another thread's valid run() would be refused meanwhile)."""
+
+    class Spy:
+        def __init__(self, lock):
+            self.lock, self.acquired = lock, 0
+
+        def acquire(self, blocking=True):
+            self.acquired += 1
+            return self.lock.acquire(blocking)
+
+        def release(self):
+            self.lock.release()
+
+    f, d = setup(clock, tmp_path, [brief(), finish(), summary()], coordinator=copilot())
+    d._ran = Spy(d._ran)
+    with pytest.raises(InvalidConfigError, match="do not fit"):
+        d.run("x" * (30 * 1024))
+    assert d._ran.acquired == 0 and f.started == 0
+    assert d.run("req").status == "completed"
+
+
+# ---- task 13.36: the rest of the phase-7 review (T5, C6, C7) ----------------------------------------
+
+
+@pytest.mark.parametrize("fenced", [True, False])
+def test_an_action_of_exactly_64_containers_is_accepted(fenced):
+    """Review T5 / D13: 64 levels of containers (the object and 63 lists) pass, 65 do not."""
+    body = '{"action": "finish", "reason": ' + "[" * 63 + '"r"' + "]" * 63 + "}"
+    text = f"```json\n{body}\n```" if fenced else f"text {body}"
+    value, err = PR.extract_action(text)
+    assert err is None and value["action"] == "finish"
+    deeper = text.replace("[" * 63, "[" * 64).replace("]" * 63, "]" * 64)
+    assert PR.extract_action(deeper) == (None, "the action is nested too deeply")
+
+
+@pytest.mark.parametrize("text", [
+    'use the { character. Then {"action": "finish", "reason": "r"}',
+    'he said "{" and then {"action": "finish", "reason": "r"}',
+    'an unclosed [ and { here {"action": "finish", "reason": "r"}',
+])
+def test_an_unmatched_brace_without_a_code_block_is_no_action(text):
+    """Review C6 / D13: without a code block, once a brace does not pair up nothing after it is read."""
+    assert PR.extract_action(text) == (None, PR.extract_action("plain")[1])
+    assert "no action found" in PR.extract_action(text)[1]
+
+
+class _BadStr(Exception):
+    def __str__(self):
+        raise RuntimeError("no text for this exception")
+
+
+def test_participant_exception_whose_str_fails_is_a_message_status(clock, tmp_path):
+    """Review C7: a participant's exception that cannot be turned into text still maps to a status."""
+    f, d = setup(clock, tmp_path, [brief(), dispatch(("critic", "q")), finish(), summary()],
+                 scripts={"critic": [Turn(_BadStr())]})
+    rec = d.run("req")
+    reply, = [m for m in rec.messages if m.type == "reply"]
+    assert (reply.status, reply.content) == ("failed", "_BadStr: ")
+    assert (rec.status, rec.end_reason) == ("completed", "finished")
+
+
+def test_interrupt_failure_whose_str_fails_still_marks_the_participant_unavailable(clock, tmp_path):
+    f = FakeFactory(clock, {"coordinator": [brief(), dispatch(("builder", "q")), finish(), summary()],
+                            "builder": [Turn("late", duration=500)]})
+    f.interrupt_errors["builder"] = _BadStr()
+    rec = make(f, tmp_path, turn_timeout=100).run("req")
+    reply, = [m for m in rec.messages if m.type == "reply"]
+    assert reply.status == "timeout" and reply.content.endswith("; interrupt failed: ")
+    assert not rec.member("builder").available and rec.end_reason != "internal_error"
+
+
+# ---- task 13.38: every coordinator input within the budget (D13 "协调者输入的长度") ---------------------
+
+
+def _copilot_limit():
+    from polyagent import _prompt
+    from polyagent import kinds as K
+
+    return _prompt.max_text_bytes(K.adapter("copilot")), (lambda t: _prompt.sanitize(K.adapter("copilot"), t))
+
+
+def test_long_feedback_to_a_copilot_coordinator_is_cut_and_the_discussion_goes_on(clock, tmp_path):
+    """Scenario: 反馈过长 — 20 errors quoting four-byte characters the coordinator wrote."""
+    limit, sanitize_ = _copilot_limit()
+    bad = action({"action": "dispatch", "assignments": [{"to": "\U0001F600" * 260 + str(i), "question": "q"}
+                                                        for i in range(20)]})
+    f, d = setup(clock, tmp_path, [brief(), bad, finish(), summary()], coordinator=copilot())
+    rec = d.run("req")
+    assert (rec.status, rec.end_reason) == ("completed", "finished")
+    feedback = coord(f).prompts[2]
+    assert len(feedback.encode()) <= limit and sanitize_(feedback)
+    assert "[truncated by polyagent" in feedback and tag(f, "protocol reminder") in feedback  # reminder kept
+    bad_msg, = [m for m in rec.messages if m.type == "coordinator_output"]
+    assert len(bad_msg.content["errors"]) == 20  # the record keeps every error
+
+
+def test_aborted_turn_notice_is_cut_to_the_budget(clock, tmp_path):
+    """The aborted-turn notice goes through the same cut as feedback. With the construction checks a
+    real configuration leaves it room; the budget is lowered after the brief to make it bite."""
+    f, d = setup(clock, tmp_path, [brief(), Turn(AgentTurnAbortedError("😀" * 290)), finish(), summary()])
+
+    def on_event(e):
+        if e.type == "message" and e.payload["message"]["type"] == "brief":
+            d._budget = 1200
+
+    assert d.run("req", on_event).status == "completed"
+    notice = coord(f).prompts[2]
+    assert len(notice.encode()) <= 1200 and "[truncated by polyagent" in notice
+    assert notice.startswith("Your previous turn was aborted") and tag(f, "protocol reminder") in notice
+
+
+def test_within_budget_cuts_the_body_on_a_character_boundary_and_keeps_the_footer():
+    body, footer = "\U0001F600" * 1000, "\n--- footer ---"
+    out = PR.within_budget(body, footer, 1000)
+    assert len(out.encode()) <= 1000 and out.endswith(footer) and "[truncated by polyagent" in out
+    assert out.encode().decode("utf-8") == out and "�" not in out
+    assert PR.within_budget("short", footer, 1000) == "short" + footer
+
+
+def test_a_template_that_does_not_fit_the_coordinator_is_refused_when_built(clock, tmp_path, monkeypatch):
+    """Scenario: 固定内容放不进上限. With copilot's 20480 bytes even the largest valid template (16 KiB)
+    fits (phase-9 finding), so the coordinator kind's limit is lowered here to reach the check; a claude
+    coordinator takes the same template."""
+    from polyagent import DEFAULT_TEMPLATE
+
+    n = 16 * 1024
+    while SummaryTemplate(name="t", version=1, instructions="i" * n, schema=DEFAULT_TEMPLATE.schema).validate():
+        n -= 16
+    tpl = SummaryTemplate(name="t", version=1, instructions="i" * n, schema=DEFAULT_TEMPLATE.schema)
+    f = FakeFactory(clock)
+    make(f, tmp_path, coordinator=copilot(), template=tpl)  # fits copilot as it is
+    real = engine.max_text_bytes
+    monkeypatch.setattr(engine, "max_text_bytes", lambda a: 16 * 1024 if a.kind == "copilot" else real(a))
+    with pytest.raises(InvalidConfigError, match="summary template does not fit a copilot coordinator"):
+        make(f, tmp_path, coordinator=copilot(), template=tpl)
+    make(f, tmp_path, template=tpl)  # claude: 64 KiB
+    assert f.started == 0
+
+
+def test_too_many_participants_for_a_copilot_coordinator_are_refused_when_built(clock, tmp_path):
+    """Scenario: 参与者过多 — the first count whose worst-case share is under 1 KiB is refused, one less
+    is accepted; a claude coordinator takes that count."""
+    names = [f"p{i:02d}" for i in range(40)]
+    f = FakeFactory(clock)
+    first_bad = None
+    for n in range(1, 41):
+        try:
+            make(f, tmp_path, names=tuple(names[:n]), coordinator=copilot())
+        except InvalidConfigError as e:
+            assert "too many for a copilot coordinator" in str(e)
+            first_bad = n
+            break
+    assert first_bad is not None and 10 <= first_bad <= 20, first_bad  # about 15 with the default template
+    make(f, tmp_path, names=tuple(names[:first_bad - 1]), coordinator=copilot())
+    make(f, tmp_path, names=tuple(names[:first_bad]))
+    assert f.started == 0
+
+
+def test_claude_coordinator_inputs_are_unchanged_byte_for_byte(clock, tmp_path, monkeypatch):
+    """13.38: with a 64 KiB budget nothing is cut; the inputs of this fixed run (feedback, an aborted turn,
+    results, summary) hash as with the code before the change (digest taken from that code)."""
+    import hashlib
+
+    monkeypatch.setattr(engine.secrets, "token_hex", lambda n: "0123456789abcdef")
+    spec = AgentSpec(kind="claude", model="m-1",
+                     provider=ClaudeProvider.compatible("https://llm.example.com/v1", auth_token="tok-golden-0000001"))
+    f = FakeFactory(clock, {"coordinator": [brief(), "no action here", Turn(AgentTurnAbortedError("refused")),
+                                            dispatch(("critic", "q1"), ("builder", "q2")),
+                                            '{"action": "dispatch", "assignments": [{"to": "nobody", "question": "x"}]}',
+                                            finish(), summary()],
+                            "critic": ["c" * 30000], "builder": ["\u6c49" * 9000]})
+    parts = [Participant("critic", "Finds flaws", AgentSpec(kind="copilot")),
+             Participant("builder", "Builds", AgentSpec(kind="copilot"))]
+    assert Discussion(f, spec, parts, str(tmp_path)).run("requirement text").status == "completed"
+    ps = f.agents["coordinator"].prompts
+    assert (len(ps), hashlib.sha256("\x00".join(ps).encode()).hexdigest()) == (
+        7, "90b4f15fa0e54617975d1b814aa711e13d1a84f2fc4789bd5c314fdcc9bc08ba")

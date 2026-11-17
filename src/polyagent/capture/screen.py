@@ -41,7 +41,7 @@ class ScreenCapture:
             return None
         if b.status and not any(m.search(line) for line in after for m in b.status):
             return None
-        if b.after_exclude is not None and any(b.after_exclude.search(line) for line in after):
+        if b.status_line is not None and not all(b.status_line(line) for line in after):
             return None
         return idx
 

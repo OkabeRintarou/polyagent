@@ -314,6 +314,64 @@ def test_copilot_trust_dialog_drawn_after_idle_is_still_answered(pa, client, tmp
     assert agent.status() == "idle"
 
 
+class _Clock:
+    """`time` for _launch: sleeping advances it, nothing really waits."""
+
+    def __init__(self):
+        self.t = 0.0
+
+    def monotonic(self):
+        return self.t
+
+    def sleep(self, d):
+        self.t += d
+
+
+@pytest.fixture
+def launch_clock(monkeypatch):
+    from polyagent import _launch as L
+
+    clock = _Clock()
+    monkeypatch.setattr(L, "time", clock)
+    monkeypatch.setattr(L, "DIALOG_WAIT_MS", 1000)
+    monkeypatch.setattr(L, "DIALOG_POLL", 0.2)
+    monkeypatch.setattr(L, "DIALOG_GONE_WAIT", 1.0)
+    return clock
+
+
+def test_copilot_input_box_window_starts_again_after_an_answered_dialog(pa, client, tmp_path, launch_clock):
+    """Phase-8 review C3: most of the window for the input box went by before the trust dialog showed;
+    once it is answered the input box gets a full window of its own."""
+    banner = "Copilot v1.0.112\n"
+    before, after = [banner] * 4, [banner] * 4
+    client.screens = [screen("copilot/trust-dialog.txt")]
+
+    def visible():
+        if before:
+            return before.pop(0)
+        if client.screens:
+            return client.screens[0]
+        return after.pop(0) if after else READY_SCREEN
+
+    def on_keys(fake, name, keys):
+        fake.screens.clear()
+
+    client._visible, client.on_keys = visible, on_keys
+    pa.start(AgentSpec(kind="copilot"), tmp_path)
+    assert [k for _, *k in client.args_of("agent_send_keys")] == [["enter"]]
+    assert launch_clock.t > 1.0  # more than one window in all
+
+
+def test_copilot_status_flips_while_its_input_box_is_awaited(pa, client, tmp_path, launch_clock):
+    """Phase-8 review C3: copilot's herdr status is not reliable; `working` between two `idle` reads
+    inside the window is not "did not become ready"."""
+    reads = iter(["Copilot v1.0.112\n"] * 4)
+    client._visible = lambda: next(reads, None) or READY_SCREEN
+    client.statuses["c1"] = ["idle", "working", "working", "working", "idle"]
+    pa.start(AgentSpec(kind="copilot"), tmp_path, name="c1")
+    assert not client.args_of("agent_send_keys")
+
+
 def test_copilot_never_showing_its_input_box_is_a_start_timeout(pa, client, tmp_path, quick_dialogs, monkeypatch):
     from polyagent import _launch as L
 
@@ -643,7 +701,26 @@ def test_every_pane_is_created_without_shell_history(pa, client, tmp_path, spec)
     """Task 13.19 / D6: the pane's shell gets HISTFILE=/dev/null from `workspace create --env`, so neither
     the start command nor a preparation line reaches the history of the user running the server."""
     pa.start(spec, tmp_path)
-    assert client.workspace_env == [{"HISTFILE": "/dev/null"}]
+    (env,) = client.workspace_env
+    assert env["HISTFILE"] == "/dev/null"
+
+
+@pytest.mark.parametrize("policy", ["full_auto", "read_only"])
+def test_claude_panes_are_created_with_self_update_off(pa, client, tmp_path, policy):
+    """Task 13.39 (D6 "claude 的自我升级"): every claude pane gets DISABLE_AUTOUPDATER=1 from `workspace
+    create --env`, both policies; the default full_auto start still runs no preparation script."""
+    spec = AgentSpec(kind="claude", provider=PROVIDER, policy="read_only") if policy == "read_only" \
+        else AgentSpec(kind="claude")
+    pa.start(spec, tmp_path)
+    assert client.workspace_env == [{"HISTFILE": "/dev/null", "DISABLE_AUTOUPDATER": "1"}]
+    if policy == "full_auto":
+        assert client.prep_scripts == [] and not client.args_of("pane_process_info")  # no prep, no shell check
+
+
+@pytest.mark.parametrize("kind", ["codex", "copilot", "cursor"])
+def test_other_kinds_get_no_self_update_variable_from_the_pane(pa, client, tmp_path, kind):
+    pa.start(AgentSpec(kind=kind), tmp_path)
+    assert "DISABLE_AUTOUPDATER" not in client.workspace_env[0]
 
 
 def test_workspace_create_passes_env_as_options():
@@ -657,3 +734,49 @@ def test_workspace_create_passes_env_as_options():
                      "--env", "HISTFILE=/dev/null", "--env", "A=b c")]
     c.workspace_create("/w", "L")
     assert seen[-1] == ("workspace", "create", "--cwd", "/w", "--no-focus", "--label", "L")
+
+
+@pytest.mark.parametrize("rel,ready", [
+    ("copilot/first-turn-pong.txt", True), ("copilot/long-prompt-echo-tail.txt", True),  # real, phase 8
+    ("copilot/trust-dialog.txt", False), ("copilot/permission-approval-dialog.txt", False),
+    ("copilot/permission-approval-dialog-option2-selected.txt", False),
+    ("copilot/help-overlay-after-raw-slash-help.txt", False),
+])
+def test_copilot_input_box_on_real_screens(rel, ready):
+    """Review T6: the input-box pattern start waits for (task 13.20) finds copilot's input box on real
+    screens and never in its dialogs."""
+    assert bool(K.adapter("copilot").ready_screen.search(screen(rel))) is ready
+
+
+# ---- task 13.32: records left by an earlier agent of the same name (D11) -------------------------------
+
+
+def _record(session, name, at):
+    import json
+
+    locks.submission_path(session, name).write_text(json.dumps({"v": 1, "digest": "d" * 64, "mark": 0, "at": at}))
+
+
+def test_restarting_a_name_drops_its_old_submission_record(pa, client, tmp_path):
+    """Scenario: 同名 agent 重新启动 — the new agent's first ask does not wait for the old record."""
+    import time as _time
+
+    _record(pa.session, "cp", _time.time())
+    pa.start(AgentSpec(kind="copilot"), tmp_path, name="cp")
+    assert not locks.submission_path(pa.session, "cp").exists()
+
+
+def test_cleanup_drops_expired_records_only_under_their_lock(pa, client):
+    import time as _time
+
+    now = _time.time()
+    _record(pa.session, "old", now - 3600)
+    _record(pa.session, "fresh", now)
+    _record(pa.session, "busy", now - 3600)
+    held = locks.try_lock(pa.session, "busy")  # an ask in progress may have just written it
+    try:
+        pa.cleanup()
+    finally:
+        held.release()
+    assert not locks.submission_path(pa.session, "old").exists()
+    assert locks.submission_path(pa.session, "fresh").exists() and locks.submission_path(pa.session, "busy").exists()

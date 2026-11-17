@@ -23,7 +23,7 @@ from . import herdr as H
 from . import kinds as K
 from . import locks
 from . import policy as P
-from .agent import Agent
+from .agent import Agent, drop_stale_submissions, drop_submission
 from ._rules import AGENT_NAME_RE, DISCUSSION_ID_RE, validate_agent_name, validate_discussion_id
 from .errors import (
     AgentNameConflictError,
@@ -440,6 +440,7 @@ class PolyAgent:
                 raise AgentNameConflictError(f"agent name {name!r} is used by a live agent in session {self._session!r}")
             lock = locks.acquire_for_start(self._session, name)
         try:
+            drop_submission(self._session, name)  # a new agent has submitted nothing (D11)
             for ow in self._owned():  # a same-name orphan (e.g. restored by a server restart), under our lock
                 if ow.marker.name == name and not ow.live:
                     self._close_if_marked(ow, require_orphan=True)
@@ -457,7 +458,7 @@ class PolyAgent:
         # The pane's shell writes no history: without this the command lines herdr types (the start
         # command, and the preparation line where there is one) go to the history file of the user who
         # runs the server (D6 "shell 历史", task 13.19). Not a credential, so argv is fine.
-        created = self._herdr.workspace_create(cwd, label, PANE_ENV)
+        created = self._herdr.workspace_create(cwd, label, {**PANE_ENV, **adapter.pane_env})
         wid = (created.get("workspace") or {}).get("workspace_id")
         pane = (created.get("root_pane") or {}).get("pane_id")
         if not isinstance(wid, str) or not isinstance(pane, str):
@@ -550,6 +551,7 @@ class PolyAgent:
             validate_discussion_id(discussion_id)
         cutoff = _to_unix(older_than)
         filtered = cutoff is not None or discussion_id is not None
+        drop_stale_submissions(self._session)  # records left by failed or reclaimed asks (D11)
         try:
             return self._cleanup(filtered, cutoff, discussion_id)
         except HerdrUnavailableError as e:

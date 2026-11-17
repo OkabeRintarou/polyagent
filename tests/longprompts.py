@@ -25,3 +25,15 @@ def big(token: str, size: int = 62 * 1024) -> str:
     while len(_wrap(token, body).encode()) < size:
         body.append(f"filler line {len(body) + 1:03d}: " + FILLER * 3)
     return _wrap(token, body[:-1])
+
+
+def exact(token: str, size: int) -> str:
+    """A multi-line prompt of exactly ``size`` bytes (UTF-8, ASCII text): :func:`big` padded in its last
+    filler line."""
+    text = big(token, size)
+    deficit = size - len(text.encode())
+    lines = text.split("\n")
+    lines[-2] += "z" * deficit
+    out = "\n".join(lines)
+    assert len(out.encode()) == size
+    return out

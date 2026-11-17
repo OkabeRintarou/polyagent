@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from longprompts import big, many_lines
+from longprompts import big, exact, many_lines
 from polyagent._prompt import sanitize
 from polyagent.capture import locate
 from polyagent.capture.base import prompt_digest
@@ -93,7 +93,7 @@ def test_long_prompts_logs_and_screens(agent_lab, kind):
 
     steps = [("pong", PONG, "PONG"), ("multi", MULTI, "41"), ("lines240", many_lines("LONGLINES"), "LONGLINES")]
     if kind == "copilot":  # just under copilot's paste limit (task 13.14)
-        steps.append(("edge20k", big("LONGEDGE", K.COPILOT_PASTE_LIMIT), "LONGEDGE"))
+        steps.append(("edge20k", exact("LONGEDGE", K.COPILOT_PASTE_LIMIT), "LONGEDGE"))
     steps.append(("big62k", big("LONGBIG"), "LONGBIG"))
     for step, text, token in steps:
         try:
@@ -149,7 +149,98 @@ def test_long_prompts_logs_and_screens(agent_lab, kind):
         r = by[step]
         assert r["outcome"] == "reply" and r["source"] == "session_log" and r["token"], r
         assert r["log_user_messages"] == 1 and r["log_digest_match"], r
-    if kind == "copilot":
+    if kind == "copilot":  # exactly at the limit: delivered as text, logged as those bytes (review T3)
+        assert by["edge20k"]["bytes"] == K.COPILOT_PASTE_LIMIT == by["edge20k"]["log_user_bytes"][0], by["edge20k"]
+        assert by["edge20k"]["log_verbatim"], by["edge20k"]
         assert by["big62k"]["outcome"] == "InvalidPromptError", by["big62k"]
-    if kind == "codex":  # 13.15: the rollout is opened only once the first message is submitted
+    if kind == "codex":  # 13.15: the rollout is opened only once the first message is submitted, and the
+        # library binds it then: the first turn's reply comes from the session log
         assert obs["rollout_open_before_first"] == [] and obs["rollout_first_seen"].get("at") is not None, obs
+        assert by["pong"]["source"] == "session_log", by["pong"]
+
+
+def test_copilot_paste_limit_boundary_without_submitting(agent_lab):
+    """Task 13.14 / review T3: where copilot stops taking a paste as text, reproducibly and without quota:
+    text is pasted into the input box (`pane send-text`, never submitted) and the box is cleared again.
+    20480 bytes stay text; 20481 bytes become a saved-file reference. Single- and multi-line alike."""
+    require_kind("copilot", "read_only")
+    agent = agent_lab.start("copilot", agent_lab.work("paste"), "read_only")
+    seen = {}
+    for size in (K.COPILOT_PASTE_LIMIT, K.COPILOT_PASTE_LIMIT + 1):
+        for multiline in (False, True):
+            text = exact("PASTE", size) if multiline else ("y" * 79 + " ") * (size // 80) + "y" * (size % 80)
+            assert len(text.encode()) == size and ("\n" in text) is multiline
+            assert agent_lab.herdr("pane", "send-text", agent.pane_id, text).returncode == 0
+            time.sleep(2)  # the paste has settled into the input box (phase-8 probe)
+            screen = agent.read("visible")
+            # Kept as text, a long paste may be shown collapsed (`[Paste #1 - 113 lines]`); over the limit it
+            # is `[Saved pasted content to workspace (…) id=…]`.
+            assert any(x in screen for x in ("Saved pasted content", "[Paste #", "yyyy")), screen[-600:]
+            seen[(size, multiline)] = "Saved pasted content" in screen
+            agent.send_keys("ctrl+c")  # clears the input box; nothing was submitted
+            time.sleep(1)
+    agent.close()
+    print(seen)
+    assert seen == {(K.COPILOT_PASTE_LIMIT, False): False, (K.COPILOT_PASTE_LIMIT, True): False,
+                    (K.COPILOT_PASTE_LIMIT + 1, False): True, (K.COPILOT_PASTE_LIMIT + 1, True): True}
+
+
+def _status_line(screen: str) -> str | None:
+    lines = [ln for ln in screen.splitlines() if ln.strip()]
+    idx = max((i for i, ln in enumerate(lines) if ln.startswith("›")), default=None)
+    return lines[idx + 1] if idx is not None and idx + 1 < len(lines) else None
+
+
+CODEX_CASES = {
+    "home": None,  # filled in the test: a directory under a temporary HOME of the pane
+    "spaces": "dir with spaces",
+    "long": "/".join(["a-rather-long-directory-name-segment"] * 5),
+}
+
+
+@pytest.mark.parametrize("case", ["home", "spaces", "long", "enter-title"])
+def test_codex_status_line_samples(agent_lab, case):
+    """Task 13.37 (after the rule change): real codex screens for the status-line rule, before and after a
+    first turn. The second field is compared with the working directory (and with `~` for the home case);
+    the result is written to the observations, and the idle screens must be recognized (D12)."""
+    from polyagent.capture import ScreenCapture
+
+    require_kind("codex")
+    kw = {}
+    if case == "home":  # the pane's HOME in the lab root; nothing is created in the user's real home
+        home = agent_lab.root / "home"
+        home.mkdir()
+        cwd = home / "proj"
+        cwd.mkdir()
+        kw["env"] = {"HOME": str(home)}
+    elif case == "enter-title":
+        cwd = agent_lab.work("title")
+    else:
+        cwd = agent_lab.work(CODEX_CASES[case])
+    agent = agent_lab.start("codex", cwd, **kw)
+    cap = ScreenCapture(K.adapter("codex").footer, K.adapter("codex").footer_block)
+    before = agent.read("recent-unwrapped", 200)
+    # The session title is taken from the first exchange (`PONG` in the other cases).
+    question = ("Reply with exactly these three words: Enter key handling" if case == "enter-title"
+                else "Reply with exactly one word: PONG")
+    reply = agent.ask_reply(question, 300)
+    after = agent.read("recent-unwrapped", 200)
+    for _ in range(30):  # the session title may be drawn a moment later
+        fields = (_status_line(after) or "").strip().split(" · ")
+        if case != "enter-title" or (len(fields) > 2 and "for agents" not in fields[2]):
+            break
+        time.sleep(0.5)
+        after = agent.read("recent-unwrapped", 200)
+    agent.close()
+    obs = {"case": case, "cwd_len": len(str(cwd)), "source": reply.source}
+    for name, screen in (("before", before), ("after", after)):
+        status = _status_line(screen)
+        field = status.strip().split(" · ")[1] if status and " · " in status else None
+        obs[name] = {"recognized": cap.recognized(screen), "field_is_cwd": field == str(cwd),
+                     "field_is_tilde_form": field is not None and case == "home" and field == "~/proj",
+                     "field_len": len(field or "")}
+        _dump(agent_lab, f"codex-status/{case}-{name}.txt", screen)
+    _dump(agent_lab, f"codex-status/{case}-observations.json", obs)
+    print(json.dumps(obs))
+    assert reply.source == "session_log"
+    assert obs["before"]["recognized"] and obs["after"]["recognized"], obs

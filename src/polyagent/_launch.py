@@ -110,7 +110,8 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
         lines.append(f"{c} unalias {exe} 2>/dev/null; {c} unset -f {exe} 2>/dev/null")
         if adapter.permission_env_vars:
             lines.append(f"{c} unset {_quote_names(list(adapter.permission_env_vars))} 2>/dev/null")
-    exports: dict[str, str] = dict(adapter.prestart_env)
+    exports: dict[str, str] = dict(adapter.pane_env)  # first: a caller value of the same name wins (D6)
+    exports.update(adapter.prestart_env)
     exports.update(spec.env)
     family = ""
     if spec.provider is not None:
@@ -277,11 +278,12 @@ def handle_dialogs(client: H.HerdrClient, name: str, pane_id: str, spec: AgentSp
             state = client.agent_get(name).get("agent_status")
             if state == "blocked":
                 raise AgentBlockedError(f"agent {name} stopped at an unknown start-up dialog", screen, name)
-            if state in READY:
-                if adapter.ready_screen is None or adapter.ready_screen.search(screen):
+            if state in READY or ready_by is not None:
+                if state in READY and (adapter.ready_screen is None or adapter.ready_screen.search(screen)):
                     return
                 # herdr's `idle` means nothing for this kind (D11): copilot was seen showing its trust
-                # dialog only after that (task 13.20). Ready is its input area on the screen.
+                # dialog only after that (task 13.20). Ready is its input area on the screen; within this
+                # window any state but `blocked` (copilot's flips between idle and working) means "read again".
                 ready_by = ready_by if ready_by is not None else time.monotonic() + DIALOG_WAIT_MS / 1000
                 if time.monotonic() >= ready_by:
                     raise AgentTimeoutError(f"agent {name} did not show its input area", status=state)
@@ -307,6 +309,7 @@ def handle_dialogs(client: H.HerdrClient, name: str, pane_id: str, spec: AgentSp
                                     "after it was answered", still, name)
         _after_answer(client, name, pane_id, adapter)
         waited = True
+        ready_by = None  # a fresh window for the input area after each answered dialog (phase-8 review C3)
 
 
 def start_failed_cleanup(client: H.HerdrClient, workspace_id: str) -> None:

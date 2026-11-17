@@ -42,3 +42,18 @@ claude 去掉了 `api-request*` 与 `attachment` 条目；超过 1500 字符的�
 | `claude/long-prompts.jsonl` | read_only：同样四轮，长 prompt 逐字记录 |
 | `copilot/long-prompts-readonly.events.jsonl` | read_only：PONG、多步、242 行、20298 字节（低于 copilot 的 20 KiB 粘贴上限）四轮，逐字记录 |
 | `copilot/paste-over-limit-readonly.events.jsonl` | read_only：经 herdr 直接提交（绕过库的上限）的 21 KiB prompt。用户消息是 `<pasted_content file="<会话目录>/files/paste-….txt" size="20.9 KB" lines="…" />`，原文存进会话目录的文件；模型用 view 分段读了文件再回答。超过 20480 字节就是这样（1.0.112 实测边界：20480 字节照常，20481 字节存文件） |
+
+## claude 的内置工具白名单（任务 13.33，2026-11-17，claude 2.1.322，本地兼容桩，不耗额度）
+
+用例：`tests/integration/test_claude_tools.py`（`test_denied_tools_are_neither_offered_nor_searchable[read_only]`、`test_read_only_built_in_tool_list_keeps_the_mcp_allow_list`）。`read_only` 的参数在原有的 `--permission-mode dontAsk --restricted --disable-slash-commands --strict-mcp-config --allowedTools … --disallowedTools …` 之外加 `--tools Read,Grep,Glob`，启动和提问都正常。桩服务记录到的结果：
+
+| 情形 | 提供给模型的工具 | 让“模型”调用 `ToolSearch` | 调用 `DeferredToolPlaceholder` |
+|---|---|---|---|
+| 带 `--tools`，没有 MCP | `Read`、`Grep`、`Glob`、`DeferredToolPlaceholder` | `No such tool available: ToolSearch. ToolSearch is disabled…` | `No such tool available: DeferredToolPlaceholder` |
+| 带 `--tools`，MCP 白名单 `stub/ping` | 同上，加 `mcp__stub__ping`、`mcp__stub__pong` | 同上 | 同上 |
+| 对照：不带 `--tools`，没有 MCP | `Read`、`Grep`、`Glob` | 能调用：`No matching deferred tools found` | `No such tool available` |
+| 对照：不带 `--tools`，MCP 白名单 `stub/ping` | `Read`、`Grep`、`Glob`、`ToolSearch`、`DeferredToolPlaceholder`（MCP 工具延迟加载） | — | — |
+
+- `DeferredToolPlaceholder` 是 claude 自带的定义，说明文字是 “Reserved placeholder that keeps deferred tool loading active; never call this tool.”；调用它得到“没有这个工具”，不做任何事。
+- 带 `--tools` 时 MCP 工具直接出现在工具列表里：白名单内的 `mcp__stub__ping` 返回结果，白名单外的 `mcp__stub__pong` 被拒绝（`Permission to use mcp__stub__pong has been denied …`），MCP 服务收不到它的调用。
+- 结论：`--tools` 之后能用的内置工具只有三个，工具搜索被整个关掉（不带它时工具搜索仍可调用）。多出的只有那个不能调用的占位定义。

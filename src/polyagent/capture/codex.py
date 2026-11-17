@@ -6,6 +6,7 @@ from __future__ import annotations
 from .base import Judgement, LogAdapter, Outcome, prompt_digest, text_parts
 
 _END = ("task_complete", "turn_aborted")
+ENVIRONMENT_CONTEXT = "<environment_context>"  # the user message codex writes itself at a session's start
 
 
 def _payload(e: dict) -> dict:
@@ -57,3 +58,19 @@ class CodexLog(LogAdapter):
             if e.get("type") == "event_msg" and p.get("type") == "task_started":
                 return True
         return False
+
+    def first_prompt(self, digest: str) -> bool | None:
+        """D12 "提交后再绑定": ``True`` when this prompt's digest matches exactly one user message and
+        nothing but codex's own environment context comes before it (no ended turn, no other prompt);
+        ``None`` while the prompt is not in the file yet and nothing rules the file out; ``False``
+        when the file cannot be this session's first turn."""
+        entries = self.log.entries()
+        hits = [i for i, e in enumerate(entries)
+                if (t := self._user_text(e)) is not None and prompt_digest(t) == digest]
+        if len(hits) > 1:
+            return False
+        for e in entries[: hits[0] if hits else len(entries)]:
+            text = self._user_text(e)
+            if self._end(e) or (text is not None and not text.lstrip().startswith(ENVIRONMENT_CONTEXT)):
+                return False
+        return True if hits else None

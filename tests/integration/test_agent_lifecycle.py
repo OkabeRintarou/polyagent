@@ -112,3 +112,54 @@ def test_copilot_trust_is_not_persisted(agent_lab):
     config = agent_lab.homes["COPILOT_HOME"] / "config.json"
     text = config.read_text() if config.exists() else ""
     assert str(cwd) not in text and os.path.realpath(cwd) not in text
+
+
+@pytest.mark.parametrize("policy", [None, "read_only"])
+def test_claude_runs_with_self_update_off(agent_lab, policy):
+    """Task 13.39 / scenario 启动 claude: the claude process carries DISABLE_AUTOUPDATER=1 from the
+    library's `workspace create --env` (both policies; the default start runs no preparation script).
+    Only this one variable is read from the process environment. Started only: no prompt, no quota."""
+    from .stubs import AnthropicStub
+    from polyagent.spec import ClaudeProvider
+
+    require_kind("claude", policy, login=False)
+    kw = {"provider": None}
+    if policy == "read_only":  # needs an explicit provider: the local stub (never asked here)
+        stub = AnthropicStub()
+        agent_lab.on_cleanup(stub.close)
+        kw["provider"] = ClaudeProvider.compatible(stub.url, auth_token="stub-token-not-a-secret-0004", model="stub-model")
+    agent = agent_lab.start("claude", agent_lab.work(f"upd-{policy}"), policy, **kw)
+    created = [c for c in agent_lab.calls() if c[2:4] == ["workspace", "create"]]
+    assert created and all("DISABLE_AUTOUPDATER=1" in c[c.index("--env") + 1:] for c in created[-1:])
+    values = set()
+    for pid in agent_pids(agent_lab, agent):
+        for item in environ(pid).split(b"\0"):
+            if item.startswith(b"DISABLE_AUTOUPDATER="):
+                values.add(item.split(b"=", 1)[1])
+    assert values == {b"1"}, values
+    if policy is None:  # no preparation script for the default start
+        assert not [c for c in agent_lab.calls() if c[2:4] == ["pane", "run"]]
+    agent.close()
+
+
+
+def test_copilot_cold_starts_take_their_first_prompt(lab_factory):
+    """Task 13.20 (after the rule): ten cold starts of copilot, each in a fresh lab (fresh isolated
+    configuration and working directory); the first prompt of each is delivered. A trust dialog drawn
+    after start returned is looked for during the first seconds and its screen kept for the report."""
+    require_kind("copilot", "read_only")
+    late = []
+    for i in range(10):
+        lab = lab_factory()
+        agent = lab.start("copilot", lab.work(f"cold{i}"), "read_only")
+        for _ in range(12):
+            screen = agent.read("visible")
+            if "Confirm folder trust" in screen:
+                late.append((i, screen))
+                break
+            time.sleep(0.25)
+        assert "PONG" in agent.ask(PONG, 180), i
+        agent.close()
+    for i, screen in late:
+        print(f"late trust dialog after start {i}:\n{screen[-1500:]}")
+    assert late == []

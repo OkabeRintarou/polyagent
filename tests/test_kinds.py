@@ -228,5 +228,15 @@ def test_claude_lists_after_task_13_2():
         d = denied(policy)
         assert {"Skill", "EnterPlanMode", "ExitPlanMode", "AskUserQuestion"} <= set(d)
     assert "DesignSync" in denied("read_only") and "DesignSync" not in denied("full_auto")
+    assert "ReportFindings" in denied("read_only") and "ReportFindings" not in denied("full_auto")  # 13.33
+
+
+def test_claude_read_only_names_its_built_in_tools():
+    """Task 13.33: read_only offers only Read, Grep and Glob of the built-in set (a new built-in tool is
+    not available by default); full_auto keeps the default set and its deny list."""
+    ro = args("claude", "read_only", session_id=SID, allow_extra=("mcp__stub__ping",))
+    assert _list(ro, "--tools") == ["Read,Grep,Glob"]
+    assert _list(ro, "--allowedTools") == ["Read", "Grep", "Glob", "mcp__stub__ping"]  # MCP via the allow list
+    assert "--tools" not in args("claude", "full_auto", session_id=SID)
     for p in ("read_only", "full_auto"):
         assert K.adapter("claude").capability(K.turn_attribution(p)).state == K.VERIFIED

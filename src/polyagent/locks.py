@@ -135,6 +135,9 @@ def agent_lock(session: str, name: str) -> FileLock:
     return FileLock(sub / f"{validate_agent_name(name)}.lock")
 
 
+SUBMISSION_SUFFIX = ".submitted"
+
+
 def submission_path(session: str, name: str) -> Path:
     """``agents/<name>.submitted``: the D11 submission record of agent ``name`` (not a lock)."""
     sub = lock_dir(session) / AGENT_LOCK_DIR
@@ -142,7 +145,7 @@ def submission_path(session: str, name: str) -> Path:
         _private_dir(sub)
     except OSError as e:
         raise InvalidConfigError(f"cannot create the agent lock directory {sub} ({e.strerror or e})") from None
-    return sub / f"{validate_agent_name(name)}.submitted"
+    return sub / f"{validate_agent_name(name)}{SUBMISSION_SUFFIX}"
 
 
 def server_lock(session: str) -> FileLock:

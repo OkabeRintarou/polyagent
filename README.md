@@ -61,9 +61,9 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 
 各 kind 的差异：
 
-- **claude**：`read_only` 用 `--restricted` 启动，会连同用户 settings 里的登录一起忽略，所以要显式给出兼容端点、Bedrock 或 Vertex provider；官方登录在只读下暂不支持。两档下都不能用子 agent、工作流、定时与唤醒、后台监视、消息发送、任务管理、工作树切换、`Skill`、计划模式（`EnterPlanMode`、`ExitPlanMode`）和提问表单（`AskUserQuestion`）：这些工具会让回复与提问对不上，或停下等人。`read_only` 下另外禁用 `Edit`、`Write`、`NotebookEdit`、`Bash`、`WebFetch`、`WebSearch`、`DesignSync`，只放行 `Read`、`Grep`、`Glob` 和 MCP 白名单里的工具。这份清单随 claude 的版本维护（改用内置工具白名单的核实见任务 13.33）。目录信任对话框的应答和 `full_auto` 的确认会写入用户配置。
-- **copilot**：一次 prompt 最多 20 KiB（UTF-8，含库加的引导行）：更长的粘贴会被 copilot 存成文件、消息里只剩文件引用，库收不到也确认不了这条 prompt，所以直接抛 `InvalidPromptError`；copilot 作协调者时，讨论把协调者的每次输入控制在这个上限之内。`read_only` 下模型只看得到读文件、搜索和列目录三个工具，它只会在回复里写出命令而不执行。两档下都不能用子 agent 和工作流。`full_auto` 的 copilot 以后台方式启动的命令，结果不会作为回复返回：需要结果时在 prompt 里要求它同步执行。被中断之后（中断键待验证）不能再提问，需要关闭后重新启动。目录信任只在本次会话有效，不持久保存。
-- **codex**：库带 `--no-daemon` 启动，不留后台服务进程；目录信任只对本次运行有效，不写配置。codex 在第一条消息提交之后才打开它的会话日志，所以**每个 codex agent 的第一次提问走屏幕截取**（来源标为 `screen`），之后的提问取自会话日志。屏幕底部不是空闲的输入区（例如停在选择对话框）时，这次提问报“agent 忙碌”，什么都不提交。
+- **claude**：`read_only` 用 `--restricted` 启动，会连同用户 settings 里的登录一起忽略，所以要显式给出兼容端点、Bedrock 或 Vertex provider；官方登录在只读下暂不支持。两档下都不能用子 agent、工作流、定时与唤醒、后台监视、消息发送、任务管理、工作树切换、`Skill`、计划模式（`EnterPlanMode`、`ExitPlanMode`）和提问表单（`AskUserQuestion`）：这些工具会让回复与提问对不上，或停下等人。`read_only` 下用 `--tools Read,Grep,Glob` 只开放这三个内置工具（CLI 新版本新增的内置工具默认不可用，工具搜索也被关掉；claude 另会列出一个不能调用的占位定义），MCP 工具只开放白名单里的；`Edit`、`Write`、`NotebookEdit`、`Bash`、`WebFetch`、`WebSearch`、`DesignSync`、`ReportFindings` 另在禁用清单里作第二层。这些清单随 claude 的版本维护，升级后要重跑 `tests/integration/test_claude_tools.py`。目录信任对话框的应答和 `full_auto` 的确认会写入用户配置。库启动的 claude 两档都带关闭自我升级的环境变量（`DISABLE_AUTOUPDATER=1`，在创建终端时给出）：它只作用于库的终端，不改用户的配置和安装；用户自己运行 claude 时照常升级；只经由库运行 claude 的环境（例如专用服务用户）因此要手动升级；在 `AgentSpec.env` 里给同名变量可以改回。
+- **copilot**：一次 prompt 最多 20 KiB（UTF-8，含库加的引导行）：更长的粘贴会被 copilot 存成文件、消息里只剩文件引用，库收不到也确认不了这条 prompt，所以直接抛 `InvalidPromptError`；copilot 作协调者时，协调者的每次输入（首条输入、各轮结果、总结请求、校验反馈、中止提示）都控制在约 20 KiB 之内，它看到的参与者回复因此更短：默认模板、回复都很长时，总结阶段每条回复大约留下 1 个参与者 17 KB、2 个 8.7 KB、3 个 5.8 KB、5 个 3.5 KB、8 个 2.2 KB；需求加角色约 18 KiB；模板放不下或参与者多到每条回复分不到 1 KiB 时，构造 `Discussion` 就报参数错误（默认模板下最多约 15 个参与者）。参与者多或回复长的讨论建议用 claude 作协调者。`read_only` 下模型只看得到读文件、搜索和列目录三个工具，它只会在回复里写出命令而不执行。两档下都不能用子 agent 和工作流。`full_auto` 的 copilot 以后台方式启动的命令，结果不会作为回复返回：需要结果时在 prompt 里要求它同步执行。被中断之后（中断键待验证）不能再提问，需要关闭后重新启动。目录信任只在本次会话有效，不持久保存。
+- **codex**：库带 `--no-daemon` 启动，不留后台服务进程；目录信任只对本次运行有效，不写配置。codex 在第一条消息提交之后才新建它的会话日志，库在提交之后再去找它，确认里面只有这一轮之后采用，所以回复（包括第一次提问的）取自会话日志；找不到可以采用的日志时这一轮退回屏幕截取，来源标为 `screen`。还没有会话日志时，提交之前屏幕底部不是空闲的输入区（例如停在选择对话框）的话，这次提问报“agent 忙碌”，什么都不提交。
 - **cursor**：只支持 `full_auto` 和单行 prompt，以 `/` 开头的 prompt 被拒绝；`--trust` 会持久保存目录信任；启动前库会阻止它自动升级用户的安装。
 
 ### 只读保证的强度
@@ -90,7 +90,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 - **`AgentSpec`**：`kind`（`cursor-agent` 是 `cursor` 的别名）、`model`（首字符必须是字母或数字）、`extra_args`、`env`、`provider`（仅 claude）、`policy`、`mcp_allow`、`mcp_config`、`auto_trust`。
   - `extra_args` 两档下都不能含库保留的选项（库自己设置的、改变会话身份或运行方式的）和 `--`；以子命令或初始 prompt 改变运行方式不受支持。短选项和它的值要写成两个元素。`read_only` 下另有很小的白名单。
   - `mcp_allow` 条目写作 `server` 或 `server/tool`，名字匹配 `[A-Za-z0-9._-]+`，不含 `__`，不以 `_` 开头或结尾；只在 `read_only` 下有意义。白名单内的 MCP server 自身可能联网或写入，由调用方负责。
-  - `read_only` 下 `env` 不接受会改变权限、配置位置、编辑器或模块加载路径的变量名（例如 `HOME`、`PATH`、`BASH_ENV`、`NODE_OPTIONS`、`NODE_PATH`、`LD_*`、`EDITOR`、`VISUAL`、`XDG_CONFIG_HOME`），也不接受各 CLI 的配置变量族（`COPILOT_*`、`CODEX_*`、`CLAUDE_*`、`CURSOR_*` 等）。copilot 的账号凭据用 `GH_TOKEN` 或 `GITHUB_TOKEN` 注入；`COPILOT_GITHUB_TOKEN` 因为前缀规则不被接受。
+  - `read_only` 下 `env` 不接受会改变权限、配置位置、编辑器或模块加载路径的变量名（例如 `HOME`、`PATH`、`BASH_ENV`、`NODE_OPTIONS`、`NODE_PATH`、`LD_*`、`EDITOR`、`VISUAL`、`XDG_CONFIG_HOME`），也不接受这个 agent 自己的 kind 的配置变量族（copilot 的 `COPILOT_*`、codex 的 `CODEX_*`、claude 的 `CLAUDE_*`、cursor 的 `CURSOR_*` 等，各自另有几个不带前缀的名字）。copilot 的账号凭据用 `GH_TOKEN` 或 `GITHUB_TOKEN` 注入；`COPILOT_GITHUB_TOKEN` 因为前缀规则不被接受。
   - `env` 的值以 0600 临时文件注入 pane，不进入 argv。注意 `dataclasses.asdict(spec)` 的结果里有 `env` 的值：不要用会展开映射的编码器序列化配置对象。
 - **`ClaudeProvider`** 只经类方法构造：`official()`；`compatible(base_url, *, auth_token=None, api_key=None, model=None, small_fast_model=None, custom_headers=None)`（`auth_token` 与 `api_key` 恰好给一个；`custom_headers` 可以有多个请求头，值按原样发送并按凭据对待）；`bedrock(region, *, profile=None, access_key_id=None, secret_access_key=None, session_token=None, bearer_token=None, model=None, small_fast_model=None)`；`vertex(region, project_id, *, credentials_file=None, model=None, small_fast_model=None)`。
   - 兼容端点的地址不能带用户信息、查询串或片段（凭据只能经 `auth_token`、`api_key`、`custom_headers` 给出）。
@@ -105,7 +105,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 - `ask(text, timeout)` / `ask_reply(...)`：超时必须是有限正数，**建议不短于 30 秒**。更短的超时之后立即再次提问，可能得到“agent 忙碌”或“未找到回复”。同一 agent 的提问在线程、句柄和进程之间串行。
 - 超时抛 `AgentTimeoutError`，其 `pending` 可交给 `wait_reply(pending, timeout)` 继续等待同一轮的回复；`pending` 必须用在同一个 agent、同一个会话上。会话日志绑定的回合不带 prompt 文本；屏幕截取的回合带 prompt 首行的前 60 个字符（用来在屏幕上定位回显）。超时错误的诊断文本只有 herdr 报告的状态和规则名。
 - `cancel` 事件在 prompt 提交之前置位时什么都不发送，agent 正在进行的上一轮不受影响。
-- 回复优先取自会话日志（codex、copilot、claude），来源标注在 `Reply.source`。屏幕截取目前只用于 cursor 和 codex（codex 是每个 agent 的第一次提问）：它取的是渲染后的文本，无法识别 agent 级错误；屏幕底部认不出输入区时，提交前抛“agent 忙碌”、结束后抛“未找到回复”，不返回文本。claude 和 copilot 的会话日志不可用时提问报“未找到回复”。
+- 回复优先取自会话日志（codex、copilot、claude），来源标注在 `Reply.source`。屏幕截取目前只用于 cursor，以及 codex 绑定不上会话日志的那一轮：它取的是渲染后的文本，无法识别 agent 级错误；屏幕底部认不出输入区时，提交前抛“agent 忙碌”、结束后抛“未找到回复”，不返回文本。claude 和 copilot 的会话日志不可用时提问报“未找到回复”。
 - `full_auto` 下 agent 停在对话框时抛 `AgentBlockedError`（带屏幕），用 `dismiss()` 以拒绝键关掉对话框后可继续提问；`read_only` 下对话框自动拒绝。`send_keys()` 只接受命名按键（`enter`、`esc`、`tab`、方向键、`backspace`、`ctrl+c`、`ctrl+u`），任意文本只能经 `ask` 发送。
 - 其余操作：`PolyAgent.attach(name)` 按名字重新接管本库启动的 agent（kind、策略、会话 ID 取自归属标记，可以在别的进程里）；`PolyAgent.list()` 列出本库启动、仍然存活的 agent；`Agent.status()` 返回 herdr 报告的状态（`idle`、`working`、`blocked`、`done`、`unknown`；copilot 的会话日志里还有没结束的回合时报 `working`）；`Agent.interrupt()` 发送该 kind 的中断键并有限地等这一轮结束；`Agent.read(source, lines)` 读终端文本（`visible`、`recent`、`recent-unwrapped`）。
 - agent 能读到自身进程环境里的变量和凭据（`read_only` 下 copilot 和 codex 对 shell 工具隐藏注入的变量）。
@@ -115,6 +115,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 - 准备 pane 环境时，库清掉这个 pane 的提示符钩子（`PROMPT_COMMAND`、`PS0`）和 DEBUG/RETURN/ERR trap，依赖它们的 shell 集成在 agent 的 pane 里不起作用。
 - 库创建的每个 pane 的 shell 都以 `HISTFILE=/dev/null` 启动，准备环境时另外取消历史文件。用户的 shell 启动文件自己设置了 `HISTFILE`、而这次启动又不需要准备环境（默认策略、没有变量和 provider）时，herdr 敲入的启动命令仍会进入运行 server 的用户的 shell 历史；命令里没有凭据。
 - 各 kind 的目录信任：copilot、codex 只对本次会话/运行有效；claude、cursor 会持久保存。可用 `auto_trust=False` 关闭自动信任。copilot 的信任对话框可能在 herdr 已报告就绪之后才出现，所以 copilot 的启动要等到屏幕上出现它的输入框才算完成（等不到报超时）。
+- **启动耗时**：`start_timeout` 约束的是 agent 进程启动这一步；启动对话框的应答和等输入区的等待各有自己的上限，不计入它，一次启动的最长耗时因此大于 `start_timeout`。
 
 ## 部署与运维
 
@@ -122,7 +123,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 - `stop_server()` 结束这个 session 的 server，**所有进程**在该 session 里的 agent 都会被杀掉。之后再次拉起，旧 workspace 会作为孤儿回来，调用 `cleanup()` 关闭。
 - herdr 升级后旧 server 仍在运行时，调用报 `protocol_mismatch`（`HerdrUnavailableError`）：停止该 session 的 server（`herdr session stop <名字>`）后重新拉起。库不会自动重启 server，那会杀掉全部 agent。
 - **孤儿回收**：库创建的 workspace 带归属标记。`cleanup()` 关闭 agent 已经不在的 workspace；`cleanup(discussion_id=...)` 关闭某次讨论的全部 agent；`cleanup(older_than=...)` 按创建时间关闭。重命名 workspace 会抹掉归属标记，使它脱离库管理。
-- **日志**：标准库 `logging`，logger 名 `polyagent`。不记录环境变量值；prompt 与回复只在 DEBUG 级别记录并截断。回收关闭 workspace 记 INFO，讨论里关闭成员失败记 WARNING，讨论的内部错误记 ERROR（带堆栈）。
+- **日志**：标准库 `logging`，logger 名 `polyagent`。不记录环境变量值，也不记录 prompt 与回复的文本，任何级别都不记录。回收关闭 workspace 记 INFO，讨论里关闭成员失败记 WARNING，讨论的内部错误记 ERROR（带堆栈）。
 - **资源**：实测空闲时单个 agent 进程的常驻内存，claude 约 210 MiB，copilot 约 350 MiB（本机，claude 2.1.322、copilot 1.0.112）。库不限制并发数量，按机器内存自行限流。
 
 ## 讨论

@@ -1,6 +1,7 @@
 """Tasks 7.3 / 7.4: session-log adapters and the screen capture (design D12), on the task-3.x samples."""
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -275,7 +276,7 @@ def test_first_prompt_on_a_fresh_screen():
 
 
 def test_multiline_prompt_continuation_and_prefixes_are_skipped():
-    cap = ScreenCapture(K.adapter("claude").footer, K.adapter("claude").footer_block)
+    cap = ScreenCapture((re.compile(r"^\s*─{10,}"),))  # line markers (D12; no kind uses them at present)
     screen = "old reply\n> Message from the user follows:\n  /help me\n\n⏺ Here is the answer.\n  Second line.\n" \
              "  Worked for 3s • 2:47 PM\n" + "─" * 40 + "\n❯ \n"
     text = cap.extract(screen, ["old reply"], [K.GUIDE_LINE_TEXT, "/help me"], count=1)
@@ -609,17 +610,15 @@ def test_codex_first_turn_screen_sample_gives_the_reply():
     ("claude", "claude/two-turns-pong-markdown.txt", "Reply with exactly one word: PONG"),
     ("copilot", "copilot/first-turn-pong.txt", "Reply with exactly one word: PONG"),
 ])
-def test_claude_and_copilot_echo_like_their_input_line(kind, rel, echo):
-    """Task 13.16: in both, the echo of a submitted prompt starts with the same `❯` as the input line, and
-    the line markers inferred for them do not give the reply: claude's end the content area at the echo
-    (nothing found); copilot's let start-up notices, thinking lines and the footer's path line through.
-    Their screen capture stays off (unverified) until a footer rule fits these samples (phase-8 finding)."""
+def test_claude_and_copilot_take_no_reply_from_the_screen(kind, rel, echo):
+    """Task 13.16 (D12): their echo starts with the same `❯` as the input line and the markers once
+    inferred for them did not give the reply (phase-8 samples), so screen capture is unsupported for
+    both and the adapter table has no footer rule for them."""
     screen = (SCREENS / rel).read_text()
     assert any(line.lstrip().startswith(f"❯ {echo}") for line in screen.splitlines())
     a = K.adapter(kind)
-    assert a.capability(K.SCREEN_CAPTURE).state != K.VERIFIED
-    got = ScreenCapture(a.footer, a.footer_block).extract(screen, [], [echo], count=0)
-    assert got is None or got.strip() != "PONG"
+    assert a.capability(K.SCREEN_CAPTURE).state == K.UNSUPPORTED and a.capability(K.SCREEN_CAPTURE).task is None
+    assert a.footer == () and a.footer_block is None
 
 
 # ---- task 13.31: codex's bottom footer block (D12, four conditions) --------------------------------
@@ -670,3 +669,52 @@ def test_codex_reply_with_a_prefixed_line_and_no_input_line_is_not_truncated():
     screen = "› the question\n\n• Use it like this:\n› quoted step one\n  quoted step two\n  done.\n"
     assert not CODEX_CAP.recognized(screen)
     assert CODEX_CAP.extract(screen, [], ["the question"], count=0) is None
+
+
+def test_codex_input_line_starts_at_column_zero():
+    """Phase-8 review C7 (D12 rule 1: a line that starts with `›`): an indented `  › …` line inside a
+    reply is no input line, so a reply ending like a footer block is not cut at it."""
+    screen = "› the question\n\n• Answer:\n  › quoted step\n  model · /dir\n"
+    assert not CODEX_CAP.recognized(screen)
+    assert CODEX_CAP.extract(screen, [], ["the question"], count=0) is None
+    assert CODEX_CAP.recognized("› the question\n\n• Answer:\n  › quoted step\n\n› Ask Codex\n\n  m · /d · ← for agents\n")
+
+
+# ---- task 13.37: codex's status line by fields (D12 rule 4, phase-8 review D-1 / T7) ----------------------
+
+
+@pytest.mark.parametrize("status", [
+    "  gpt default · /home/u/enter/app · ← for agents",  # a directory named enter
+    "  gpt default · /home/u/esc-tools · ← for agents",  # a directory starting with esc-
+    "  gpt default · /tmp/repo · Enter key handling · ← for agents",  # session titles
+    "  gpt default · /tmp/repo · Fix esc shortcut · ← for agents",
+    "  gpt default · ~ · ← for agents", "  gpt default · ~/work/app · ← for agents",
+    "  gpt default · /tmp/my repo · ← for agents      ⚠ 1 warning · f2 to view",
+])
+def test_codex_status_line_with_key_names_in_free_text_is_recognized(status):
+    """Scenario: 状态行里的目录名或标题含按键名 — recognized, and the reply is taken."""
+    screen = f"› the question\n\n• It is 42.\n\n› Ask Codex to do anything\n\n{status}\n"
+    assert CODEX_CAP.recognized(screen)
+    assert CODEX_CAP.extract(screen, [], ["the question"], count=0) == "It is 42."
+
+
+@pytest.mark.parametrize("status", [
+    "  gpt default",  # one field
+    "  gpt default · tmp/repo · ← for agents",  # the second field is no directory
+    "  gpt default · / repo · ← for agents",  # slash and a space
+    "  ↑↓ move · tab confirm",  # an unnumbered list's hint line
+    "  enter select · esc back",  # key hints in the first field
+    "  Press enter to confirm · /x",
+])
+def test_codex_status_line_that_is_not_one(status):
+    assert not CODEX_CAP.recognized(f"  Pick one\n  first\n› last\n\n{status}\n")
+
+
+@pytest.mark.parametrize("case", ["home", "spaces", "long", "enter-title"])
+def test_real_codex_status_lines_after_a_first_turn(case):
+    """Task 13.37 samples (phase 9): a working directory under HOME shown as `~/proj`, one with spaces,
+    a long one cut at the pane's width with `…`, and a plain one; all recognized, the reply is taken."""
+    screen = (SCREENS / f"codex/status-{case}-after-first-turn.txt").read_text()
+    assert CODEX_CAP.recognized(screen)
+    echo = next(line[2:] for line in screen.splitlines() if line.startswith("› ") and "Ask Codex" not in line)
+    assert CODEX_CAP.extract(screen, [], [echo], count=0)

@@ -603,7 +603,7 @@ def _load_toml(path: Path) -> dict[str, Any]:
         found = shutil.which(exe)
         if not found:
             continue
-        out = subprocess.run([found, "-c", _TOML_TO_JSON, str(path)], capture_output=True, text=True, timeout=30,
+        out = subprocess.run([found, "-I", "-c", _TOML_TO_JSON, str(path)], capture_output=True, text=True, timeout=30,
                              stdin=subprocess.DEVNULL)
         if out.returncode == 0:
             return json.loads(out.stdout)
@@ -877,7 +877,7 @@ class AgentLab:
             pytest.skip(f"{kind}: no login state to copy ({', '.join('~/' + m for m in missing)})")
         try:
             self._writers[kind]()
-        except (OSError, ValueError, KeyError, TypeError) as e:
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
             pytest.skip(f"{kind}: its login state could not be copied ({type(e).__name__})")
         self._prepared.add(kind)
 
