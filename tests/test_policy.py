@@ -5,6 +5,7 @@ net would fail any Popen of herdr).
 """
 
 import dataclasses
+import os
 
 import pytest
 
@@ -495,3 +496,211 @@ def test_more_reserved_session_and_run_mode_options(kind, arg, repo):
 def test_short_non_reserved_options_still_pass(repo):
     argv = P.build_args(P.check_static(AgentSpec(kind="copilot", extra_args=["-s"]), repo), repo, session_id=SID)
     assert argv[0] == "-s"
+
+
+# ---- task 14.1: skills_dir (design D18) -----------------------------------------------------------------
+
+
+def _skills(root, name="skills", skill="answer"):
+    d = root / name
+    (d / skill).mkdir(parents=True)
+    (d / skill / "SKILL.md").write_text("---\nname: answer\ndescription: test skill\n---\nSay OK.\n")
+    return d
+
+
+@pytest.fixture
+def fake_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    for rel in (".claude", ".copilot", ".codex", ".agents", ".config", ".local/state/polyagent"):
+        (home / rel).mkdir(parents=True)
+    monkeypatch.setattr(P, "passwd_home", lambda: home)
+    return home
+
+
+def test_codex_skills_dir_is_not_supported(repo, tmp_path, fake_home):
+    """Task 14.4: codex only loads skills from fixed directories; the reason is in the message."""
+    with pytest.raises(PolicyNotSupportedError) as ei:
+        P.check_static(AgentSpec(kind="codex", skills_dir=_skills(tmp_path)), repo)
+    msg = str(ei.value)
+    assert "skills directory is not supported for codex" in msg and "fixed directories" in msg
+    assert "not yet verified" not in msg
+
+
+def test_unverified_skills_dir_names_its_task(repo, tmp_path, fake_home, monkeypatch):
+    """Scenario: 机制未验证的 kind — no v1 kind is still unverified, so the state is put on an adapter."""
+    a = K.adapter("codex")
+    caps = dict(a.capabilities, **{K.SKILLS_DIR: K.Capability(K.UNVERIFIED, task="14.4")})
+    monkeypatch.setitem(K.ADAPTERS, "codex", dataclasses.replace(a, capabilities=caps))
+    with pytest.raises(PolicyNotSupportedError, match=r"not yet verified .*14\.4"):
+        P.check_static(AgentSpec(kind="codex", skills_dir=_skills(tmp_path)), repo)
+
+
+@pytest.mark.parametrize("make", ["missing", "file", pytest.param("unreadable", marks=pytest.mark.skipif(
+    os.geteuid() == 0, reason="root can read any directory")), "empty", "no_skill_md", "skill_md_dir"])
+def test_invalid_skills_dir_is_a_configuration_error(make, repo, tmp_path, fake_home):
+    """Scenarios: skills 目录无效 / 目录里没有 skill — InvalidConfigError, before the capability (an
+    unverified kind would otherwise raise PolicyNotSupportedError)."""
+    d = tmp_path / "skills"
+    if make == "file":
+        d.write_text("x")
+    elif make == "unreadable":
+        _skills(tmp_path)
+        d.chmod(0)
+    elif make == "empty":
+        d.mkdir()
+    elif make == "no_skill_md":
+        (d / "a").mkdir(parents=True)
+        (d / "a" / "README.md").write_text("x")
+    elif make == "skill_md_dir":
+        (d / "a" / "SKILL.md").mkdir(parents=True)
+    try:
+        with pytest.raises(InvalidConfigError) as ei:
+            P.check_static(AgentSpec(kind="copilot", skills_dir=d), repo)
+        assert not isinstance(ei.value, PolicyNotSupportedError) and "skills_dir" in str(ei.value)
+        expected = {"missing": "cannot be used", "file": "not a directory", "unreadable": "cannot be read and entered",
+                    "empty": "no subdirectory with a SKILL.md", "no_skill_md": "no subdirectory with a SKILL.md",
+                    "skill_md_dir": "no subdirectory with a SKILL.md"}[make]
+        assert expected in str(ei.value)
+    finally:
+        if make == "unreadable":
+            d.chmod(0o700)
+
+
+@pytest.mark.parametrize("where", [".claude/skills", ".copilot", ".codex/x/skills", ".agents/skills", ".config/s",
+                                   ".local/state/polyagent/s", "HOME", "ABOVE_HOME", "CONTAINS_CONFIG"])
+def test_skills_dir_in_the_users_configuration_is_refused(where, repo, tmp_path, fake_home):
+    """Scenario: 指向用户配置目录 — judged on the real path: equal to, inside or containing a configuration
+    location, the home itself or a directory containing it."""
+    if where == "HOME":
+        target = fake_home
+    elif where == "ABOVE_HOME":
+        target = fake_home.parent
+    elif where == "CONTAINS_CONFIG":
+        target = fake_home / ".local" / "state"
+    else:
+        target = fake_home / where
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "s").mkdir(exist_ok=True)
+    (target / "s" / "SKILL.md").write_text("x")
+    with pytest.raises(InvalidConfigError, match="configuration directories"):
+        P.check_static(AgentSpec(kind="copilot", skills_dir=target), repo)
+
+
+def test_skills_dir_reaching_the_configuration_through_a_symlink_is_refused(repo, tmp_path, fake_home):
+    inside = _skills(fake_home / ".claude", "skills")
+    link = tmp_path / "innocent"
+    link.symlink_to(inside)
+    with pytest.raises(InvalidConfigError, match="real path"):
+        P.check_static(AgentSpec(kind="copilot", skills_dir=link), repo)
+    ok = _skills(fake_home / "projects" / "kit")  # elsewhere under the home is fine
+    assert P.check_static(AgentSpec(kind="copilot", skills_dir=ok), repo).skills_dir == str(ok)
+
+
+@pytest.mark.parametrize("kind,var", [("copilot", "COPILOT_SKILLS_DIRS"), ("claude", "CLAUDE_CODE_PLUGIN_DIRS"),
+                                      ("claude", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")])
+def test_skills_dir_given_twice_is_refused(kind, var, repo, tmp_path, fake_home):
+    """Scenario: 重复给出 — the kind's own variable in env together with skills_dir; alone it stays allowed."""
+    d = _skills(tmp_path)
+    with pytest.raises(InvalidConfigError, match=var) as ei:
+        P.check_static(AgentSpec(kind=kind, env={var: str(d)}, skills_dir=d), repo)
+    assert not isinstance(ei.value, PolicyNotSupportedError)
+    P.check_static(AgentSpec(kind=kind, env={var: str(d)}), repo)  # full_auto, no skills_dir: unchanged
+
+
+@pytest.mark.parametrize("policy", [None, "read_only"])
+def test_claude_plugin_dir_is_reserved(policy, repo):
+    """D18: `--plugin-dir` is how the library loads a skills directory; callers cannot pass it."""
+    with pytest.raises(InvalidConfigError, match="reserve"):
+        P.check_static(AgentSpec(kind="claude", policy=policy, extra_args=["--plugin-dir", "/x"],
+                                 provider=ClaudeProvider.compatible("https://llm.example.com", auth_token=TOKEN)), repo)
+
+
+def test_copilot_skills_dir_is_given_as_its_real_path(repo, tmp_path, fake_home):
+    """Task 14.2: the checked spec carries the real path (what the variable gets), not the symlink."""
+    real = _skills(tmp_path / "kit")
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    spec = P.check_static(AgentSpec(kind="copilot", skills_dir=link), repo)
+    assert spec.skills_dir == str(real) and spec.policy == "full_auto"
+
+
+@pytest.mark.parametrize("root", ["a,b", "kit ", "kit\u3000"])
+def test_copilot_skills_dir_with_a_comma_or_trailing_space_is_not_supported(root, repo, tmp_path, fake_home):
+    """Task 14.2: COPILOT_SKILLS_DIRS is a comma-separated list; whether its items are stripped of white space
+    is not verified, so a path ending with it is refused (D18, review C-3)."""
+    d = _skills(tmp_path, root)
+    with pytest.raises(PolicyNotSupportedError, match="comma"):
+        P.check_static(AgentSpec(kind="copilot", skills_dir=d), repo)
+    assert P.check_static(AgentSpec(kind="copilot", skills_dir=_skills(tmp_path / "a b")), repo)  # inner space is fine
+
+
+@pytest.mark.parametrize("kind", K.KINDS)
+@pytest.mark.parametrize("where", ["inside", "equal", "containing", "relative", "tilde"])
+def test_skills_dir_in_the_configuration_directory_env_names_is_refused(kind, where, repo, tmp_path, fake_home):
+    """Scenario: 指向环境变量另指的配置目录 (D18, review C-1) — the kind's configuration variable in env moves
+    its configuration there; a relative value is taken from the working directory (the pane's), `~` also
+    from the home in case the CLI expands it. Before the capability: codex gets InvalidConfigError too."""
+    var = K.adapter(kind).config_dir_var
+    cfg = {"relative": repo / "agentcfg", "tilde": fake_home / "elsewhere"}.get(where, tmp_path / "cfg")
+    skills = _skills(cfg / "kit") if where != "containing" else _skills(tmp_path / "kit")
+    if where == "equal":
+        cfg = skills
+    elif where == "containing":
+        cfg = skills / "answer" / "cfg"
+        cfg.mkdir()
+    value = {"relative": "agentcfg", "tilde": "~/elsewhere"}.get(where, str(cfg))
+    with pytest.raises(InvalidConfigError, match=f"{var} given in env") as ei:
+        P.check_static(AgentSpec(kind=kind, env={var: value}, skills_dir=skills), repo)
+    assert not isinstance(ei.value, PolicyNotSupportedError)
+    if kind != "codex":
+        assert P.check_static(AgentSpec(kind=kind, skills_dir=skills), repo)  # without that variable: accepted
+        other = "COPILOT_HOME" if kind == "claude" else "CLAUDE_CONFIG_DIR"  # another kind's variable: not this one's
+        assert P.check_static(AgentSpec(kind=kind, env={other: value}, skills_dir=skills), repo)
+
+
+@pytest.mark.parametrize("layout", ["named_otherwise", "sibling_entry", "space_in_root", "colon_in_root", ".kit", "-kit",
+                                    "..."])
+def test_claude_skills_dir_needs_a_clean_plugin_root(layout, repo, tmp_path, fake_home):
+    """Task 14.3: the parent is loaded as a plugin root (all of it), so the directory is named `skills`
+    and is the root's only entry; the root's name prefixes skill names, and one with a space cannot be
+    called (claude 2.1.322); one starting with '.' or '-' was not tried (D18, review C-4)."""
+    root = {"space_in_root": "My Kit", "colon_in_root": "a:b"}.get(layout, "kit" if layout.isidentifier() else layout)
+    d = _skills(tmp_path / root, "myskills" if layout == "named_otherwise" else "skills")
+    if layout == "sibling_entry":
+        (d.parent / "hooks").mkdir()
+    with pytest.raises(PolicyNotSupportedError, match="only entry of its parent"):
+        P.check_static(AgentSpec(kind="claude", skills_dir=d), repo)
+
+
+def test_claude_clean_plugin_root_is_accepted(repo, tmp_path, fake_home):
+    d = _skills(tmp_path / "Kit.v2_x-1")
+    assert P.check_static(AgentSpec(kind="claude", skills_dir=d), repo).skills_dir == str(d)
+
+
+def test_claude_settings_option_is_refused_with_a_skills_dir(repo, tmp_path, fake_home):
+    """Task 14.3: the library passes `--settings` itself then; without skills_dir it stays the caller's."""
+    d = _skills(tmp_path / "kit")
+    for arg in (["--settings", "{}"], ["--settings={}"]):
+        with pytest.raises(InvalidConfigError, match="when skills_dir is given"):
+            P.check_static(AgentSpec(kind="claude", extra_args=arg, skills_dir=d), repo)
+    P.check_static(AgentSpec(kind="claude", extra_args=["--settings", "{}"]), repo)
+
+
+def test_build_args_rechecks_the_skills_dir_capability(repo, tmp_path, fake_home, monkeypatch):
+    """D18 (review T-5): like read_only, the step that generates the arguments checks the capability again."""
+    spec = P.check_static(AgentSpec(kind="claude", skills_dir=_skills(tmp_path / "kit")), repo)
+    a = K.adapter("claude")
+    caps = dict(a.capabilities, **{K.SKILLS_DIR: K.Capability(K.UNVERIFIED, task="14.3")})
+    monkeypatch.setitem(K.ADAPTERS, "claude", dataclasses.replace(a, capabilities=caps))
+    with pytest.raises(PolicyNotSupportedError, match="skills directory"):
+        P.build_args(spec, repo, session_id=SID)
+
+
+def test_build_args_gives_no_skills_arguments_under_read_only(repo, tmp_path, fake_home):
+    """Review C-5 (defence in depth): a spec whose policy was forced to read_only behind check_static gets
+    neither the plugin root nor the settings, and Skill stays denied."""
+    spec = P.check_static(AgentSpec(kind="claude", provider=PROVIDER, skills_dir=_skills(tmp_path / "kit")), repo)
+    object.__setattr__(spec, "policy", "read_only")
+    argv = P.build_args(spec, repo, session_id=SID)
+    assert argv == P.build_args(ro("claude"), repo, session_id=SID)
+    assert "Skill" in argv[argv.index("--disallowedTools"):] and "--plugin-dir" not in argv

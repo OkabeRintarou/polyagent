@@ -838,3 +838,107 @@ def test_cleanup_removes_temporary_files_of_a_crashed_write(pa, client):
     finally:
         held.release()
     assert not old.exists() and new.exists() and busy.exists()
+
+
+@pytest.mark.parametrize("kind", ["codex"])
+def test_skills_dir_start_is_refused_before_any_herdr_call(pa, client, tmp_path, kind):
+    """D18 / task 14.1: an unverified kind refuses a valid skills directory, an invalid directory is a
+    configuration error first; neither makes a herdr call, creates a workspace or writes a file."""
+    skills = tmp_path / "kit" / "skills"
+    (skills / "answer").mkdir(parents=True)
+    (skills / "answer" / "SKILL.md").write_text("---\nname: answer\ndescription: d\n---\nSay OK.\n")
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    with pytest.raises(PolicyNotSupportedError, match="skills directory"):
+        pa.start(AgentSpec(kind=kind, skills_dir=skills), tmp_path)
+    with pytest.raises(InvalidConfigError) as ei:
+        pa.start(AgentSpec(kind=kind, skills_dir=tmp_path / "missing"), tmp_path)
+    assert not isinstance(ei.value, PolicyNotSupportedError)
+    assert client.calls == [] and client.workspaces == {}
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+
+
+def test_copilot_skills_dir_is_exported_by_the_preparation_script(pa, client, tmp_path):
+    """Task 14.2: under full_auto the preparation script exports COPILOT_SKILLS_DIRS with the real path and
+    re-checks it like any export; the shell must be POSIX; nothing is written into the skills directory or
+    the working directory."""
+    import shlex
+
+    skills = tmp_path / "kit dir" / "skills"
+    (skills / "answer").mkdir(parents=True)
+    (skills / "answer" / "SKILL.md").write_text("---\nname: answer\ndescription: d\n---\nSay OK.\n")
+    link = tmp_path / "via-link"
+    link.symlink_to(skills)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    def trees():
+        return [sorted(p.relative_to(d) for p in d.rglob("*")) for d in (skills.parent, work)]
+
+    before = trees()
+    pa.start(AgentSpec(kind="copilot", skills_dir=link), work)
+    script, = client.prep_scripts
+    lines = script.splitlines()
+    value = shlex.quote(str(skills))
+    assert f"\\command export COPILOT_SKILLS_DIRS={value}" in lines
+    assert any(line.startswith('if \\command test "${COPILOT_SKILLS_DIRS+x}" != x') and value in line for line in lines)
+    assert client.args_of("pane_process_info")  # the shell check ran
+    assert trees() == before
+
+
+def test_copilot_skills_dir_needs_a_posix_shell(pa, client, tmp_path):
+    skills = tmp_path / "skills"
+    (skills / "a").mkdir(parents=True)
+    (skills / "a" / "SKILL.md").write_text("x")
+    client.shell = "zsh"
+    with pytest.raises(HerdrError) as ei:
+        pa.start(AgentSpec(kind="copilot", skills_dir=skills), tmp_path)
+    assert ei.value.code == "unsupported_shell" and client.workspaces == {}
+
+
+def test_claude_skills_dir_loads_the_parent_as_a_plugin_root(pa, client, tmp_path):
+    """Task 14.3: `--plugin-dir <parent>`, bundled skills off for the session, `Skill` off the deny list
+    (the other denied tools stay), background tasks off through the preparation script (re-checked)."""
+    import json as _json
+
+    skills = tmp_path / "kit" / "skills"
+    (skills / "answer").mkdir(parents=True)
+    (skills / "answer" / "SKILL.md").write_text("---\nname: answer\ndescription: d\n---\nSay OK.\n")
+    work = tmp_path / "work"
+    work.mkdir()
+    pa.start(AgentSpec(kind="claude", skills_dir=skills), work)
+    pa.start(AgentSpec(kind="claude"), work, name="plain")
+    (_, _, _, _, args), (_, _, _, _, plain) = client.args_of("agent_start")
+    assert args[:4] == ["--plugin-dir", str(skills.parent), "--settings", args[3]]
+    assert _json.loads(args[3])["disableBundledSkills"] is True
+    # review T-1: exactly Skill comes off the deny list; every other argument is the start's without skills_dir
+    sid = plain[plain.index("--session-id") + 1]
+    args = [sid if a == args[args.index("--session-id") + 1] else a for a in args]
+    assert plain.count("Skill") == 1 and args[4:] == [a for a in plain if a != "Skill"]
+    script, = client.prep_scripts
+    assert "\\command export CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" in script.splitlines()
+    assert 'test "$CLAUDE_CODE_DISABLE_BACKGROUND_TASKS" != 1' in script
+
+
+def test_claude_without_a_skills_dir_keeps_skill_denied(pa, client, tmp_path):
+    pa.start(AgentSpec(kind="claude"), tmp_path)
+    (_, _, _, _, args), = client.args_of("agent_start")
+    assert "Skill" in args[args.index("--disallowedTools") + 1:]
+    assert "--plugin-dir" not in args and "--settings" not in args and client.prep_scripts == []
+
+
+def test_skills_dir_with_a_non_utf8_real_path_is_refused_before_any_herdr_call(pa, client, tmp_path):
+    """Review C-2: the real path is written into the preparation script; one that is not UTF-8 is a
+    configuration error of the static checks, before the workspace exists."""
+    raw = os.fsencode(str(tmp_path)) + b"/kit\xff"
+    try:
+        os.mkdir(raw)
+    except OSError:
+        pytest.skip("the file system does not take non-UTF-8 names")
+    skills = Path(os.fsdecode(raw)) / "skills"
+    (skills / "a").mkdir(parents=True)
+    (skills / "a" / "SKILL.md").write_text("x")
+    link = tmp_path / "link"
+    link.symlink_to(skills)
+    with pytest.raises(InvalidConfigError, match="UTF-8"):
+        pa.start(AgentSpec(kind="copilot", skills_dir=link), tmp_path)
+    assert client.calls == [] and client.workspaces == {}

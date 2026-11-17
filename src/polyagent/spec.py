@@ -23,6 +23,10 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]=,+-]*")  # first character alphanumeric (D8)
 MCP_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 MCP_TOOL_SEP = "/"  # `server` or `server/tool`; `/` is outside the MCP name character set
+SKILLS_FULL_AUTO_ONLY = (
+    "skills_dir is only used under full_auto: a skill is instructions for the model that may bring scripts and "
+    "lead to tool calls, none of which the read_only checks cover (discussion members always run read_only)"
+)
 # Values travel as one shell input line (herdr types the start command, D8) or through an
 # exported script (D6); control characters cannot be guaranteed to arrive verbatim.
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -399,6 +403,8 @@ class AgentSpec:
     mcp_allow: tuple[str, ...] = ()
     mcp_config: str | None = None
     auto_trust: bool = True
+    # D18: a directory whose direct subdirectories are skills (each with SKILL.md); full_auto only.
+    skills_dir: str | None = None
 
     def __post_init__(self) -> None:
         if self.kind in UNSUPPORTED_KINDS:
@@ -439,10 +445,18 @@ class AgentSpec:
             object.__setattr__(self, "mcp_config", path)
         if not isinstance(self.auto_trust, bool):
             raise InvalidConfigError("auto_trust must be a bool")
+        if self.skills_dir is not None:  # the file system is looked at only by the start's static checks
+            try:
+                raw = os.fspath(self.skills_dir)
+            except TypeError:
+                raise InvalidConfigError("skills_dir must be a path (string or path object)") from None
+            object.__setattr__(self, "skills_dir", os.path.abspath(_plain(raw, "skills_dir")))
         if self.policy is not None:
             self._check_policy_fields(self.policy)
 
     def _check_policy_fields(self, policy: str) -> None:
+        if policy != ToolPolicy.FULL_AUTO.value and self.skills_dir is not None:
+            raise InvalidConfigError(SKILLS_FULL_AUTO_ONLY)
         if policy == ToolPolicy.FULL_AUTO.value:
             if self.mcp_allow:
                 raise InvalidConfigError(
@@ -472,7 +486,7 @@ class AgentSpec:
         return AgentSpec(
             kind=self.kind, model=self.model, extra_args=self.extra_args, env=dict(self.env),
             provider=self.provider, policy=policy, mcp_allow=self.mcp_allow, mcp_config=self.mcp_config,
-            auto_trust=self.auto_trust,
+            auto_trust=self.auto_trust, skills_dir=self.skills_dir,
         )
 
     def secret_values(self) -> tuple[str, ...]:
@@ -487,5 +501,5 @@ class AgentSpec:
             f"AgentSpec(kind={self.kind!r}, model={self.model!r}, extra_args={self.extra_args!r}, "
             f"env={self.env!r}, provider={self.provider!r}, "
             f"policy={self.policy!r}, mcp_allow={self.mcp_allow!r}, mcp_config={self.mcp_config!r}, "
-            f"auto_trust={self.auto_trust!r})"
+            f"auto_trust={self.auto_trust!r}, skills_dir={self.skills_dir!r})"
         )

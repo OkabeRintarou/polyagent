@@ -1,0 +1,16 @@
+{"type": "user", "message": {"role": "user", "content": "hello"}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "ECHO hello"}], "stop_reason": "end_turn"}}
+{"type": "system", "subtype": "turn_duration", "durationMs": 50}
+{"type": "user", "message": {"role": "user", "content": "DO_SKILL kit:project-password"}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "kit:project-password"}}], "stop_reason": "tool_use"}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_f28b8036052e4c03b8db", "content": "Launching skill: kit:project-password"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "TOOLRESULT OK Launching skill: kit:project-password"}], "stop_reason": "end_turn"}}
+{"type": "system", "subtype": "turn_duration", "durationMs": 53}
+{"type": "user", "message": {"role": "user", "content": "DO_SKILL kit:forked"}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Skill", "input": {"skill": "kit:forked"}}], "stop_reason": "tool_use"}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_66dd7e6e14c54d92a560", "content": "Skill \"kit:forked\" completed (forked execution).\n\nResult:\nECHO LAB_ROOT/kit/skills/forked\n\nReply with exactly FORKED-1BBEBCE1."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "TOOLRESULT OK Skill \"kit:forked\" completed (forked execution).\n\nResult:\nECHO LAB_ROOT"}], "stop_reason": "end_turn"}}
+{"type": "system", "subtype": "turn_duration", "durationMs": 64}
+{"type": "user", "message": {"role": "user", "content": "ping after fork"}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "ECHO ping after fork"}], "stop_reason": "end_turn"}}
+{"type": "system", "subtype": "turn_duration", "durationMs": 21}

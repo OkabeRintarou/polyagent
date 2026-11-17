@@ -59,8 +59,10 @@ REASONS = {
 
 
 def needs_prep(spec: AgentSpec, adapter: K.KindAdapter) -> bool:
-    """D6: always under read_only; under full_auto only with variables or a provider."""
-    return spec.policy == "read_only" or bool(spec.env) or spec.provider is not None
+    """D6: always under read_only; under full_auto only with variables, a provider or a skills directory
+    the kind takes from a variable (D18)."""
+    return (spec.policy == "read_only" or bool(spec.env) or spec.provider is not None
+            or (spec.skills_dir is not None and (adapter.skills_export is not None or bool(adapter.skills_prep_env))))
 
 
 def check_shell(client: H.HerdrClient, pane_id: str) -> None:
@@ -112,6 +114,10 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
             lines.append(f"{c} unset {_quote_names(list(adapter.permission_env_vars))} 2>/dev/null")
     exports: dict[str, str] = dict(adapter.pane_env)  # first: a caller value of the same name wins (D6)
     exports.update(spec.env)
+    if spec.skills_dir is not None:  # D18: re-checked with the other exports; env cannot name them
+        if adapter.skills_export:
+            exports[adapter.skills_export] = spec.skills_dir
+        exports.update(adapter.skills_prep_env)
     family = ""
     if spec.provider is not None:
         prefixes, names = ClaudeProvider.clear_rules()

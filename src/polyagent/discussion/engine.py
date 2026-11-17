@@ -40,7 +40,7 @@ from ..errors import (
     InvalidConfigError,
     InvalidPromptError,
 )
-from ..spec import AgentSpec, ToolPolicy
+from ..spec import SKILLS_FULL_AUTO_ONLY, AgentSpec, ToolPolicy
 from ..template import DEFAULT_TEMPLATE, SummaryTemplate
 from . import protocol as PR
 from .records import (
@@ -128,6 +128,8 @@ def _member_spec(spec: object, who: str) -> AgentSpec:
         raise InvalidConfigError(f"{who}: spec must be an AgentSpec")
     if spec.policy == ToolPolicy.FULL_AUTO.value:
         raise InvalidConfigError(f"{who}: discussion members always run read_only; full_auto is not allowed")
+    if spec.skills_dir is not None:  # D18: the same check as full_auto above
+        raise InvalidConfigError(f"{who}: {SKILLS_FULL_AUTO_ONLY}")
     return spec
 
 

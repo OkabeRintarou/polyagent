@@ -480,3 +480,27 @@ def test_endpoint_url_must_not_carry_credentials(url):
     with pytest.raises(InvalidConfigError):
         ClaudeProvider("compatible", {"ANTHROPIC_BASE_URL": url, "ANTHROPIC_AUTH_TOKEN": TOKEN})
     assert ClaudeProvider.compatible("http://127.0.0.1:8080/anthropic", auth_token=TOKEN)
+
+
+def test_skills_dir_is_stored_absolute_and_checked_for_type(tmp_path, monkeypatch):
+    """D18: construction does not touch the file system; type, emptiness and control characters only."""
+    monkeypatch.chdir(tmp_path)
+    s = AgentSpec(kind="copilot", skills_dir="rel/skills")
+    assert s.skills_dir == str(tmp_path / "rel" / "skills") and "skills_dir=" in repr(s)
+    assert AgentSpec(kind="copilot", skills_dir=tmp_path / "x").skills_dir == str(tmp_path / "x")  # path objects
+    for bad in (3, "", "a\nb", b"/bytes"):
+        with pytest.raises(InvalidConfigError, match="skills_dir"):
+            AgentSpec(kind="copilot", skills_dir=bad)
+    assert AgentSpec(kind="codex").skills_dir is None
+
+
+@pytest.mark.parametrize("kind", ["copilot", "claude", "codex"])
+def test_skills_dir_under_read_only_is_a_configuration_error(kind, tmp_path):
+    """Scenario: 只读下指定 skills 目录 — explicit read_only at construction; an unset policy resolved to
+    read_only (discussion members) too. Not PolicyNotSupportedError: another kind would not help."""
+    with pytest.raises(InvalidConfigError, match="only used under full_auto") as ei:
+        AgentSpec(kind=kind, policy="read_only", skills_dir=tmp_path)
+    assert not isinstance(ei.value, PolicyNotSupportedError)
+    with pytest.raises(InvalidConfigError, match="only used under full_auto"):
+        AgentSpec(kind=kind, skills_dir=tmp_path).resolve("read_only")
+    assert AgentSpec(kind=kind, skills_dir=tmp_path).resolve("full_auto").skills_dir == str(tmp_path)

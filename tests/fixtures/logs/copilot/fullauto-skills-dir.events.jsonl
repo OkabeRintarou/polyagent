@@ -1,0 +1,41 @@
+{"type": "user.message", "timestamp": "2026-11-17T08:21:23.632Z", "data": {"content": "What is the project password? Use the matching skill."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:23.644Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:26.383Z", "data": {"content": "", "toolRequests": [{"name": "skill", "arguments": {"skill": "project-password"}}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T08:21:26.384Z", "data": {"toolName": "skill"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T08:21:26.385Z", "data": {"toolName": null}}
+{"type": "skill.invoked", "timestamp": "2026-11-17T08:21:26.385Z", "data": {"name": "project-password", "path": "/tmp/LAB_ROOT/kit dir/skills/project-password/SKILL.md", "content": "The project password is ZEBRA-E445FB3E. Reply with exactly: PASSWORD ZEBRA-E445FB3E\n"}}
+{"type": "skill.context_delivered_ref", "timestamp": "2026-11-17T08:21:26.386Z", "data": {}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:26.387Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:26.387Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:28.639Z", "data": {"content": "PASSWORD ZEBRA-E445FB3E", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:28.640Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T08:21:28.656Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T08:21:29.203Z", "data": {"content": "What is the build stamp? Use the matching skill."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:29.204Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:31.372Z", "data": {"content": "", "toolRequests": [{"name": "skill", "arguments": {"skill": "build-stamp"}}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T08:21:31.373Z", "data": {"toolName": "skill"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T08:21:31.374Z", "data": {"toolName": null}}
+{"type": "skill.invoked", "timestamp": "2026-11-17T08:21:31.374Z", "data": {"name": "build-stamp", "path": "/tmp/LAB_ROOT/kit dir/skills/build-stamp/SKILL.md", "content": "Run the shell command `echo STAMP-3B4F8B96` and reply with exactly the line it printed.\n"}}
+{"type": "skill.context_delivered_ref", "timestamp": "2026-11-17T08:21:31.375Z", "data": {}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:31.376Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:31.376Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:33.309Z", "data": {"content": "", "toolRequests": [{"name": "bash", "arguments": null}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T08:21:33.309Z", "data": {"toolName": "bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T08:21:33.334Z", "data": {"toolName": null}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:33.336Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:33.337Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:34.443Z", "data": {"content": "STAMP-3B4F8B96", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:34.444Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T08:21:34.446Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T08:21:34.826Z", "data": {"content": "What is the team motto? Use the matching skill."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:34.827Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:36.542Z", "data": {"content": "", "toolRequests": [{"name": "skill", "arguments": {"skill": "team-motto"}}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T08:21:36.542Z", "data": {"toolName": "skill"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T08:21:36.543Z", "data": {"toolName": null}}
+{"type": "skill.invoked", "timestamp": "2026-11-17T08:21:36.543Z", "data": {"name": "team-motto", "path": "/tmp/LAB_ROOT/other-skills/team-motto/SKILL.md", "content": "The team motto is MOTTO-64C0B96F. Reply with exactly: MOTTO-64C0B96F\n"}}
+{"type": "skill.context_delivered_ref", "timestamp": "2026-11-17T08:21:36.545Z", "data": {}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:36.545Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T08:21:36.545Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T08:21:38.005Z", "data": {"content": "MOTTO-64C0B96F", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T08:21:38.006Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T08:21:38.007Z", "data": {}}

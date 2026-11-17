@@ -2066,3 +2066,16 @@ def test_claude_coordinator_inputs_are_unchanged_byte_for_byte(clock, tmp_path, 
     ps = f.agents["coordinator"].prompts
     assert (len(ps), hashlib.sha256("\x00".join(ps).encode()).hexdigest()) == (
         7, "90b4f15fa0e54617975d1b814aa711e13d1a84f2fc4789bd5c314fdcc9bc08ba")
+
+
+@pytest.mark.parametrize("role", ["coordinator", "participant"])
+def test_member_with_a_skills_dir_is_refused_when_built(clock, tmp_path, role):
+    """Scenario: 成员带 skills 目录 (D18) — the same check as a member given full_auto; no agent starts."""
+    f = FakeFactory(clock)
+    skilled = AgentSpec(kind="copilot", skills_dir=tmp_path)
+    with pytest.raises(InvalidConfigError, match="only used under full_auto"):
+        if role == "coordinator":
+            make(f, tmp_path, coordinator=dataclasses.replace(coord_spec(), skills_dir=str(tmp_path)))
+        else:
+            make(f, tmp_path, specs={"critic": skilled})
+    assert f.started == 0

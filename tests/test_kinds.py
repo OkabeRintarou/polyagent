@@ -1,6 +1,7 @@
 """Task 4.3: kind adapter table (design D7, D8, D9)."""
 
 import dataclasses
+import json
 from pathlib import Path
 
 import pytest
@@ -239,3 +240,20 @@ def test_claude_read_only_names_its_built_in_tools():
     assert "--tools" not in args("claude", "full_auto", session_id=SID)
     for p in ("read_only", "full_auto"):
         assert K.adapter("claude").capability(K.turn_attribution(p)).state == K.VERIFIED
+
+
+def test_skills_dir_capability_and_variables():
+    """D18: the states after tasks 14.2 to 14.4 (copilot and claude verified, codex not supported)."""
+    tasks = {k: K.adapter(k).capability(K.SKILLS_DIR) for k in K.KINDS}
+    assert {k: (c.state, c.task) for k, c in tasks.items()} == {
+        "copilot": (K.VERIFIED, None), "claude": (K.VERIFIED, None), "codex": (K.UNSUPPORTED, None)}
+    assert K.adapter("copilot").skills_export == "COPILOT_SKILLS_DIRS"  # task 14.2
+    assert K.adapter("copilot").skills_env_vars == ("COPILOT_SKILLS_DIRS",)
+    assert K.adapter("claude").skills_env_vars == ("CLAUDE_CODE_PLUGIN_DIRS", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS")
+    # task 14.3: bundled skills off for the session, Skill allowed only with a skills directory
+    assert json.loads(K.CLAUDE_SKILLS_SETTINGS) == {"disableBundledSkills": True,
+                                                    "skillOverrides": {"plugin-authoring": "off"}}
+    full = K.adapter("claude").native_args("full_auto")
+    assert full.count("Skill") == 1
+    assert K.adapter("claude").native_args("full_auto", undeny=("Skill",)) == [a for a in full if a != "Skill"]
+    assert "--plugin-dir" in K.adapter("claude").reserved_options

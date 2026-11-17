@@ -13,7 +13,7 @@
 
 - Linux；已安装 herdr 0.9.5 或更高（`herdr` 在 `PATH` 上，或用 `herdr_path` 指定）以及要用的 agent CLI，并各自登录过。
 - 运行库的用户必须在 passwd 里有条目，主目录可写：锁文件放在 `~/.local/state/polyagent/<session>/`。
-- 需要准备 pane 环境的启动（`read_only`、显式 provider、注入变量）要求 pane 的 shell 是 bash、sh 或 dash。默认 shell 是 zsh 或 ksh 的用户用不了这些功能（实测两者都会让准备脚本无声失效或回显凭据）。
+- 需要准备 pane 环境的启动（`read_only`、显式 provider、注入变量、copilot 和 claude 的 skills 目录）要求 pane 的 shell 是 bash、sh 或 dash。默认 shell 是 zsh 或 ksh 的用户用不了这些功能（实测两者都会让准备脚本无声失效或回显凭据）。
 
 ## 用法
 
@@ -52,15 +52,15 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 
 **未验证按不支持处理**：某项能力没有经过实测验证时，库拒绝使用它（`PolicyNotSupportedError`），错误消息里写明对应的核实任务。
 
-| kind | `read_only` | MCP 白名单 | 会话日志 | 可作讨论成员 | 可作协调者 |
-|---|---|---|---|---|---|
-| claude | 支持（需显式的非官方 provider） | 支持（`mcp_config` 给出定义） | 支持 | 是 | 是 |
-| copilot | 支持 | 未验证 | 支持 | 是 | 是 |
-| codex | 未验证（需主机允许非特权 user namespace，且用户级规则目录为空） | 不支持 | 支持 | 否（`read_only` 未验证） | 否 |
+| kind | `read_only` | MCP 白名单 | 会话日志 | 可作讨论成员 | 可作协调者 | skills 目录（仅 `full_auto`） |
+|---|---|---|---|---|---|---|
+| claude | 支持（需显式的非官方 provider） | 支持（`mcp_config` 给出定义） | 支持 | 是 | 是 | 支持（对目录的摆法有要求） |
+| copilot | 支持 | 未验证 | 支持 | 是 | 是 | 支持 |
+| codex | 未验证（需主机允许非特权 user namespace，且用户级规则目录为空） | 不支持 | 支持 | 否（`read_only` 未验证） | 否 | 不支持 |
 
 各 kind 的差异：
 
-- **claude**：`read_only` 用 `--restricted` 启动，会连同用户 settings 里的登录一起忽略，所以要显式给出兼容端点、Bedrock 或 Vertex provider；官方登录在只读下暂不支持。两档下都不能用子 agent、工作流、定时与唤醒、后台监视、消息发送、任务管理、工作树切换、`Skill`、计划模式（`EnterPlanMode`、`ExitPlanMode`）和提问表单（`AskUserQuestion`）：这些工具会让回复与提问对不上，或停下等人。`read_only` 下用 `--tools Read,Grep,Glob` 只开放这三个内置工具（CLI 新版本新增的内置工具默认不可用，工具搜索也被关掉；claude 另会列出一个不能调用的占位定义），MCP 工具只开放白名单里的；`Edit`、`Write`、`NotebookEdit`、`Bash`、`WebFetch`、`WebSearch`、`DesignSync`、`ReportFindings` 另在禁用清单里作第二层。这些清单随 claude 的版本维护，升级后要重跑 `tests/integration/test_claude_tools.py`。目录信任对话框的应答和 `full_auto` 的确认会写入用户配置。库启动的 claude 两档都带关闭自我升级的环境变量（`DISABLE_AUTOUPDATER=1`，在创建终端时给出）：它只作用于库的终端，不改用户的配置和安装；用户自己运行 claude 时照常升级；只经由库运行 claude 的环境（例如专用服务用户）因此要手动升级；在 `AgentSpec.env` 里给同名变量可以改回。
+- **claude**：`read_only` 用 `--restricted` 启动，会连同用户 settings 里的登录一起忽略，所以要显式给出兼容端点、Bedrock 或 Vertex provider；官方登录在只读下暂不支持。两档下都不能用子 agent、工作流、定时与唤醒、后台监视、消息发送、任务管理、工作树切换、`Skill`、计划模式（`EnterPlanMode`、`ExitPlanMode`）和提问表单（`AskUserQuestion`）：这些工具会让回复与提问对不上，或停下等人。唯一的例外是带 skills 目录的 `full_auto` claude：它放开 `Skill`，其余照旧（见“skills 目录”）。`read_only` 下用 `--tools Read,Grep,Glob` 只开放这三个内置工具（CLI 新版本新增的内置工具默认不可用，工具搜索也被关掉；claude 另会列出一个不能调用的占位定义），MCP 工具只开放白名单里的；`Edit`、`Write`、`NotebookEdit`、`Bash`、`WebFetch`、`WebSearch`、`DesignSync`、`ReportFindings` 另在禁用清单里作第二层。这些清单随 claude 的版本维护，升级后要重跑 `tests/integration/test_claude_tools.py`。目录信任对话框的应答和 `full_auto` 的确认会写入用户配置。库启动的 claude 两档都带关闭自我升级的环境变量（`DISABLE_AUTOUPDATER=1`，在创建终端时给出）：它只作用于库的终端，不改用户的配置和安装；用户自己运行 claude 时照常升级；只经由库运行 claude 的环境（例如专用服务用户）因此要手动升级；在 `AgentSpec.env` 里给同名变量可以改回。
 - **copilot**：一次 prompt 最多 20 KiB（UTF-8，含库加的引导行）：更长的粘贴会被 copilot 存成文件、消息里只剩文件引用，库收不到也确认不了这条 prompt，所以直接抛 `InvalidPromptError`；copilot 作协调者时，协调者的每次输入（首条输入、各轮结果、总结请求、校验反馈、中止提示）都控制在约 20 KiB 之内，它看到的参与者回复因此更短：默认模板、回复都很长时，总结阶段每条回复大约留下 1 个参与者 17 KB、2 个 8.7 KB、3 个 5.8 KB、5 个 3.5 KB、8 个 2.2 KB；需求加角色约 18 KiB；模板放不下或参与者多到每条回复分不到 1 KiB 时，构造 `Discussion` 就报参数错误（默认模板下最多约 15 个参与者）。参与者多或回复长的讨论建议用 claude 作协调者。`read_only` 下模型只看得到读文件、搜索和列目录三个工具，它只会在回复里写出命令而不执行。两档下都不能用子 agent 和工作流。`full_auto` 的 copilot 以后台方式启动的命令，结果不会作为回复返回：需要结果时在 prompt 里要求它同步执行。copilot 的中断键是 `ctrl+c`（Esc 停不下正在执行的命令）；它在空闲的输入框上会进入退出确认，所以 `interrupt()` 只在会话日志显示有进行中的回合时才发送它。被中断的回合按中止处理，之后可以继续提问。目录信任只在本次会话有效，不持久保存。
 - **codex**：库带 `--no-daemon` 启动，不留后台服务进程；目录信任只对本次运行有效，不写配置。codex 在第一条消息提交之后才新建它的会话日志，库在提交之后再去找它，确认里面只有这一轮之后采用，所以回复（包括第一次提问的）取自会话日志；找不到可以采用的日志时这一轮退回屏幕截取，来源标为 `screen`。还没有会话日志时，提交之前屏幕底部不是空闲的输入区（例如停在选择对话框）的话，这次提问报“agent 忙碌”，什么都不提交。
 - **cursor**：v1 不支持。以 `cursor` 或 `cursor-agent` 为 kind 时，构造 `AgentSpec` 就抛 `InvalidConfigError`（不是 `PolicyNotSupportedError`，换一档策略也不行）。原因：它启动时会自动升级用户的安装、即使隔离了配置目录仍会写用户主目录，这两点在库里隔离不了；它的斜杠命令和多行 prompt 也防护不住。重新支持 cursor 在后续计划里。
@@ -86,7 +86,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 
 ## 配置要点
 
-- **`AgentSpec`**：`kind`（`codex`、`copilot` 或 `claude`）、`model`（首字符必须是字母或数字）、`extra_args`、`env`、`provider`（仅 claude）、`policy`、`mcp_allow`、`mcp_config`、`auto_trust`。
+- **`AgentSpec`**：`kind`（`codex`、`copilot` 或 `claude`）、`model`（首字符必须是字母或数字）、`extra_args`、`env`、`provider`（仅 claude）、`policy`、`mcp_allow`、`mcp_config`、`auto_trust`、`skills_dir`（见下面的“skills 目录”）。
   - `extra_args` 两档下都不能含库保留的选项（库自己设置的、改变会话身份或运行方式的）和 `--`；以子命令或初始 prompt 改变运行方式不受支持。短选项和它的值要写成两个元素。`read_only` 下另有很小的白名单。
   - `mcp_allow` 条目写作 `server` 或 `server/tool`，名字匹配 `[A-Za-z0-9._-]+`，不含 `__`，不以 `_` 开头或结尾；只在 `read_only` 下有意义。白名单内的 MCP server 自身可能联网或写入，由调用方负责。
   - `read_only` 下 `env` 不接受会改变权限、配置位置、编辑器或模块加载路径的变量名（例如 `HOME`、`PATH`、`BASH_ENV`、`NODE_OPTIONS`、`NODE_PATH`、`LD_*`、`EDITOR`、`VISUAL`、`XDG_CONFIG_HOME`），也不接受这个 agent 自己的 kind 的配置变量族（copilot 的 `COPILOT_*`、codex 的 `CODEX_*`、claude 的 `CLAUDE_*` 等，各自另有几个不带前缀的名字）。copilot 的账号凭据用 `GH_TOKEN` 或 `GITHUB_TOKEN` 注入；`COPILOT_GITHUB_TOKEN` 因为前缀规则不被接受。
@@ -97,6 +97,26 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
   - Bedrock 和 Vertex 只验证到 agent 进程的环境变量这一层，没有用真实凭据运行过。
   - `repr`、`to_dict()`、`dataclasses.asdict()` 只有类型名；provider 对象可以 pickle，pickle 的结果**包含凭据**。
 - **`PolyAgent(session="polyagent", herdr_path=None, server_start_timeout=15, server_env_passthrough=())`**：server 环境按最小清单构造（`PATH`、`HOME`、区域设置、终端、代理、`XDG_*`、`HERDR_CONFIG_PATH`），调用方进程里的其它变量要经 `server_env_passthrough` 显式透传或经 `AgentSpec.env` 注入；会改变权限或在每个 pane 的 shell 里执行的名字（`BASH_ENV`、`PROMPT_COMMAND`、各 CLI 的配置变量族等）不能透传。库的 herdr 调用不带 `XDG_CONFIG_HOME`（它会改变 herdr 的 session 目录）；herdr 配置文件的位置用 `HERDR_CONFIG_PATH` 指定。
+
+### skills 目录（`skills_dir`，只在 `full_auto` 下）
+
+`AgentSpec(kind=..., skills_dir="/path/to/kit/skills")` 让 agent 从调用方给的目录加载 skills：目录的每个直接子目录是一个 skill，里面有 `SKILL.md`。
+
+- **只在 `full_auto` 下有效。** 显式 `read_only` 时构造 `AgentSpec` 就报 `InvalidConfigError`；讨论成员（协调者和参与者）带 `skills_dir` 时构造 `Discussion` 就报错。原因：skill 是交给模型执行的指令，可以带脚本、引出工具调用，不在只读的任何一项检查之内。
+- **推荐的摆法（两种已验证的 kind，copilot 和 claude，通用）**：一个只放 `skills/` 的目录，例如 `kit/skills/<skill 名>/SKILL.md`，`skills_dir` 指向 `kit/skills`。`kit` 这一级的名字以字母或数字开头，只用字母、数字、`.`、`_`、`-`。
+- **各 kind**：
+  - copilot：经 `COPILOT_SKILLS_DIRS` 加载（准备脚本导出并复核）。这个变量是逗号分隔的列表，所以路径里不能有逗号，也不能以空白字符结尾（列表各项是否去掉首尾空白没有核实）；不满足时报 `PolicyNotSupportedError`。用户设置里的 `skillDirectories` 照常同时生效。
+  - claude：库把 `skills_dir` 的上一级当作插件根，经 `--plugin-dir` 加载，所以目录名必须是 `skills`，且是上一级目录里唯一的条目（上一级里别的东西，例如 hooks、MCP 定义，也会被加载）；不满足时报 `PolicyNotSupportedError` 并说明摆法。skill 的名字形如 `kit:<skill 名>`。只有带 `skills_dir` 的 `full_auto` claude 才放开 `Skill` 工具，其余被禁用的工具照旧。同时库为本次会话关掉 claude 自带的 skills（`--settings` 里的 `disableBundledSkills` 等），并设置 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`：这样声明在子 agent 里运行（`context: fork`）的 skill 也在本轮里完成，结果在本轮的回复里，不会在之后自行开始新的一轮。给了 `skills_dir` 时附加参数里不能再有 `--settings`。
+    - 放开 `Skill` 之后，能被模型调用的不只是 `skills_dir` 里的：claude 按平常规则加载的用户自己的 skills（配置目录下的）、工作目录里 `.claude/skills` 下的、用户已启用的插件带的，也都可以调用（按 claude 的设置说明推出，没有单独实测）。`full_auto` 本来就不隔离用户和项目的配置。
+    - 库只承诺关掉 claude 自带的 skills。claude 2.1.322 的一个内置插件带的 `plugin-authoring` 另按名字关掉；新版本的内置插件带来别的 skill 时，它会出现在模型可用的列表里，直到库的适配表更新。
+    - 后台任务对这个 agent 整体关掉：带 skills 目录的 claude 也不能在后台运行命令（命令都在本轮里同步执行）。
+    - 库不检查会让 skills 失效的附加参数：例如 `--disable-slash-commands` 会关掉全部 skills，`--tools` 不含 `Skill` 时也用不到；和 `skills_dir` 一起给出时 agent 照常启动，只是用不到 skill。
+  - codex：不支持。codex 只从固定位置加载 skills（工作目录到仓库根每一级的 `.agents/skills`、用户的和系统的目录），`skills.config` 只能启用或禁用那里已有的 skill；库不往这些位置复制或链接文件。
+- **路径的限制**：按解析符号链接后的真实路径检查。真实路径必须能按 UTF-8 编码、不含控制字符；必须是当前用户可读、可进入的目录，至少有一个子目录里有 `SKILL.md`；不能是主目录本身或包含主目录，不能等于、位于或包含 `~/.claude`、`~/.copilot`、`~/.codex`、`~/.agents`、`~/.config`、库的状态目录，以及调用方在 `env` 里用该 kind 的配置目录变量（`CLAUDE_CONFIG_DIR`、`COPILOT_HOME`、`CODEX_HOME`）另指的目录（`full_auto` 的 agent 能改写它加载的目录）。`env` 里不能同时给出该 kind 自己指定 skills 的变量（`COPILOT_SKILLS_DIRS`、`CLAUDE_CODE_PLUGIN_DIRS`、`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS`）。
+- **这项检查的边界**：它防的是把路径指错，不是安全边界（`full_auto` 的 agent 本来就能写当前用户能写的位置）。它只看 `skills_dir` 自己的真实路径，不看里面的条目：子目录或 `SKILL.md` 是符号链接时，CLI 会跟着读到别处，包括用户的配置目录。配置位置按 passwd 记录的主目录和默认目录名计算；`$HOME` 被改到别处，或配置目录被 shell 启动文件里的变量改到别处时，库看不到，只认 `env` 里给出的那一个。skill 头部自带的设置（例如 claude 的 hooks、预先批准的工具、指定模型）库不解析。
+- **库不写任何东西**：不复制、不链接、不建包装目录，不改用户配置，不向工作目录放文件；只把路径经启动参数或环境变量交给 CLI。目录里的内容由调用方负责，库不读也不检查；`full_auto` 的 agent 可以改写这个目录，CLI 也会加载运行中的改动。
+- **只支持由模型自己选用。** 不能经 `ask()` 以命令形式点名 skill：以 `/`、`$` 开头的 prompt 会被加上引导行，作为普通文本交给模型。可以在 prompt 里用自然语言要求使用某个 skill。标成只能由用户点名的 skill（例如 claude 的 `disable-model-invocation`）经库用不到。
+- 后台运行的 skill：claude 上已经关掉后台运行；copilot 的 skill 在本轮里执行（实测）。skill 里自己再以异步方式启动的命令，结果同样拿不到（见 copilot 一条）。
 
 ## 提问
 

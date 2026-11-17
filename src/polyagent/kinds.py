@@ -7,6 +7,7 @@ evidence lives under ``tests/fixtures/``.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Mapping
@@ -31,6 +32,7 @@ TURN_ATTRIBUTION_READ_ONLY = "turn_attribution.read_only"
 TURN_ATTRIBUTION_FULL_AUTO = "turn_attribution.full_auto"
 
 IGNORE_USER_CONFIG = "ignore_user_config"
+SKILLS_DIR = "skills_dir"  # D18: load skills from the caller's directory (full_auto)
 
 
 def turn_attribution(policy: str) -> str:
@@ -199,17 +201,32 @@ class KindAdapter:
     # value of the same name wins (D6: claude's self-update, phase 8). They never make a start prepare.
     pane_env: Mapping[str, str] = field(default_factory=dict)
     secret_env_flag: str | None = None  # hides injected variable names from tools under read_only
+    # D18: the kind's own variables naming a skills or plugin directory; not accepted in `env` together
+    # with `skills_dir` (the same thing given twice).
+    skills_env_vars: tuple[str, ...] = ()
+    # D18: the variable the preparation script exports with the skills directory's real path (a
+    # comma-separated list for copilot, so the path must not hold a comma); None: not loaded this way.
+    skills_export: str | None = None
+    # D18, claude (task 14.3): the option that loads a plugin root; the skills directory must be the root's
+    # only entry, named `skills`, and the root's name must be usable in a qualified skill name.
+    skills_plugin_dir_option: str | None = None
+    skills_args: tuple[str, ...] = ()  # added to the native arguments when skills_dir is given
+    skills_allow_tools: tuple[str, ...] = ()  # taken off the full_auto deny list when skills_dir is given
+    skills_prep_env: Mapping[str, str] = field(default_factory=dict)  # exported, re-checked (skills_dir only)
+    skills_reserved_options: tuple[str, ...] = ()  # refused in extra_args together with skills_dir
     notes: tuple[str, ...] = field(default=())
 
     def capability(self, name: str) -> Capability:
         return self.capabilities[name]
 
     def native_args(
-        self, policy: str, *, model: str | None = None, session_id: str | None = None, allow_extra: tuple[str, ...] = ()
+        self, policy: str, *, model: str | None = None, session_id: str | None = None, allow_extra: tuple[str, ...] = (),
+        undeny: tuple[str, ...] = (),
     ) -> list[str]:
         """Base native arguments for ``policy`` (D8 table); ``allow_extra`` is appended to the read_only
         allow list (claude's ``mcp__…`` entries). Callers add MCP config, trust, secret-env and extra
-        arguments (``policy.build_args``); this does not check capability states."""
+        arguments (``policy.build_args``); this does not check capability states. ``undeny`` drops names
+        from the deny list (D18: claude's ``Skill`` when a skills directory is given)."""
         if policy == READ_ONLY:
             if not self.read_only_args:
                 raise ValueError(f"{self.kind} has no read_only arguments")
@@ -225,11 +242,18 @@ class KindAdapter:
         if allow_extra and not any(o == ALLOW_LIST_OPTION for o, _ in lists):
             raise ValueError(f"{self.kind} has no allow list for {allow_extra}")
         for option, values in lists:
+            if option == DENY_LIST_OPTION:
+                values = tuple(v for v in values if v not in undeny)
             args += [option, *values, *(allow_extra if option == ALLOW_LIST_OPTION else ())]
         return args
 
 
 ALLOW_LIST_OPTION = "--allowedTools"
+DENY_LIST_OPTION = "--disallowedTools"
+# D18 / task 14.3 (claude 2.1.322): bundled skills off for this session; `plugin-authoring` survives
+# disableBundledSkills and is turned off by name.
+CLAUDE_SKILLS_SETTINGS = json.dumps({"disableBundledSkills": True, "skillOverrides": {"plugin-authoring": "off"}},
+                                    separators=(",", ":"))
 
 # claude tools that keep producing output after the turn's end marker (D8 "回合归属"); names seen
 # in claude 2.1.322's tool lists (task 3.4 / phase-2 stub). Final list: task 13.2.
@@ -269,6 +293,8 @@ ADAPTERS: dict[str, KindAdapter] = {
             "--print", "-p", "--bg", "--background", "--desktop",
             # move the session (worktree: the log path follows the cwd) or let others type into it (review N3)
             "--worktree", "-w", "--remote-control",
+            # D18: the library's own way to load a skills directory
+            "--plugin-dir",
         ),
         read_only_args=(
             "--permission-mode", "dontAsk", "--restricted", "--disable-slash-commands", "--strict-mcp-config",
@@ -293,6 +319,11 @@ ADAPTERS: dict[str, KindAdapter] = {
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="async tools denied, also for the deferred-tool search"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(VERIFIED, note="async tools denied, also for the deferred-tool search"),
             IGNORE_USER_CONFIG: Capability(VERIFIED, note="--restricted"),
+            # Task 14.3 (claude 2.1.322, local stub and the real backend): the skills are listed as
+            # `<root>:<skill>` and run through the Skill tool within the turn; a `context: fork` skill would run
+            # in the background and its result start a turn of its own (a task notification), unless background
+            # tasks are off, when it completes inside the turn.
+            SKILLS_DIR: Capability(VERIFIED, note="--plugin-dir with the Skill tool allowed"),
         },
         config_dir_var="CLAUDE_CONFIG_DIR",
         default_config_dir=".claude",
@@ -319,6 +350,12 @@ ADAPTERS: dict[str, KindAdapter] = {
         status_trusted=True,
         deny_key="esc",
         interrupt_key="esc",
+        skills_env_vars=("CLAUDE_CODE_PLUGIN_DIRS", "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"),
+        skills_plugin_dir_option="--plugin-dir",
+        skills_args=("--settings", CLAUDE_SKILLS_SETTINGS),
+        skills_allow_tools=("Skill",),
+        skills_prep_env={"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1"},
+        skills_reserved_options=("--settings",),
         log_binding="session_id",
     ),
     "copilot": KindAdapter(
@@ -358,6 +395,10 @@ ADAPTERS: dict[str, KindAdapter] = {
             ),
             IGNORE_USER_CONFIG: Capability(UNSUPPORTED, note="no start-up option; user hooks are off only through the "
                                                              "disableAllHooks setting (task 13.5)"),
+            # Task 14.2 (copilot 1.0.112): skills in the directory's subdirectories are offered to the model
+            # and run through its `skill` tool within the turn (`skill.invoked` in the log); a path with a
+            # space works; skillDirectories from the user's settings stay in effect as well.
+            SKILLS_DIR: Capability(VERIFIED, note="COPILOT_SKILLS_DIRS"),
         },
         config_dir_var="COPILOT_HOME",
         default_config_dir=".copilot",
@@ -383,6 +424,8 @@ ADAPTERS: dict[str, KindAdapter] = {
         ready_screen=re.compile(r"(?m)^─{20,}[ \t]*\n❯[^\n]*\n─{20,}[ \t]*$"),
         deny_key="esc",
         interrupt_key="ctrl+c",
+        skills_env_vars=("COPILOT_SKILLS_DIRS",),
+        skills_export="COPILOT_SKILLS_DIRS",
         log_binding="session_id",
         secret_env_flag="--secret-env-vars",
     ),
@@ -416,6 +459,11 @@ ADAPTERS: dict[str, KindAdapter] = {
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="no asynchronous tools"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(VERIFIED, note="no asynchronous tools"),
             IGNORE_USER_CONFIG: Capability(VERIFIED, note="--disable hooks: user hooks only (task 13.5)"),
+            # Task 14.4 (codex 0.167): `-c skills.config=[{path=…}]` only enables or disables skills found in the
+            # fixed locations; a SKILL.md elsewhere was not listed to the model. There is no option or variable.
+            SKILLS_DIR: Capability(UNSUPPORTED, note="codex loads skills only from fixed directories (.agents/skills "
+                                                     "from the working directory up, the user's and the system's); "
+                                                     "polyagent does not copy or link files into them"),
         },
         config_dir_var="CODEX_HOME",
         default_config_dir=".codex",

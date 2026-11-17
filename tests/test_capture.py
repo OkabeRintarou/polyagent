@@ -862,3 +862,49 @@ def test_copilot_abort_after_a_message_is_still_an_abort(tmp_path):
                  {"type": "abort", "timestamp": iso(), "data": {"reason": "user_initiated"}},
                  {"type": "session.usage_checkpoint", "timestamp": iso(), "data": {}})
     assert CopilotLog(str(p)).judge(0, prompt_digest("q")).outcome is Outcome.ABORTED
+
+
+def test_copilot_turns_that_run_a_skill_are_ordinary_turns(tmp_path):
+    """Task 14.2 sample (copilot 1.0.112, COPILOT_SKILLS_DIRS): the `skill` tool runs inside the turn
+    (`skill.invoked`), one checkpoint per prompt, the final message is the reply; no extra turns."""
+    rel = "copilot/fullauto-skills-dir.events.jsonl"
+    log = CopilotLog(str(copy(tmp_path, rel)))
+    entries = log.log.entries()
+    assert [e["data"]["name"] for e in entries if e["type"] == "skill.invoked"] == [
+        "project-password", "build-stamp", "team-motto"]
+    replies = {q: log.judge(0, prompt_digest(q)) for q in (
+        "What is the project password? Use the matching skill.", "What is the build stamp? Use the matching skill.",
+        "What is the team motto? Use the matching skill.")}
+    assert [j.outcome for j in replies.values()] == [Outcome.REPLY] * 3
+    assert [j.text.split("-")[0] for j in replies.values()] == ["PASSWORD ZEBRA", "STAMP", "MOTTO"]
+    assert sum(e["type"] == "session.usage_checkpoint" for e in entries) == 3 and not log.turn_open()
+
+
+def test_claude_turns_that_run_a_skill_are_ordinary_turns(tmp_path):
+    """Task 14.3 sample (claude 2.1.322, local stub): a skill and a `context: fork` skill run through the
+    Skill tool inside their turns (background tasks off: no task notification, no extra turn)."""
+    rel = "claude/stub-fullauto-skills-dir.jsonl"
+    log = ClaudeLog(str(copy(tmp_path, rel)))
+    assert log.judge(0, prompt_digest("DO_SKILL kit:project-password")).text.startswith("TOOLRESULT OK Launching skill")
+    forked = log.judge(0, prompt_digest("DO_SKILL kit:forked"))
+    assert forked.outcome is Outcome.REPLY and "completed (forked execution)" in forked.text
+    assert log.judge(0, prompt_digest("ping after fork")).text == "ECHO ping after fork"
+    raw = (LOGS / rel).read_text()
+    assert not log.turn_open() and "task-notification" not in raw and raw.count('"turn_duration"') == 4
+
+
+def test_claude_forked_skill_by_default_runs_in_the_background_and_starts_a_turn(tmp_path):
+    """Task 14.3 control sample (claude 2.1.322, local stub, background tasks left on): a `context: fork`
+    skill only launches within its turn; its result arrives later as a task notification that starts a turn
+    by itself and stays in the context of every later prompt. This is why a start with a skills directory
+    exports CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 (D18 回合归属; compare stub-fullauto-skills-dir.jsonl)."""
+    rel = "claude/stub-fullauto-skills-dir-background-default.jsonl"
+    log = ClaudeLog(str(copy(tmp_path, rel)))
+    forked = log.judge(0, prompt_digest("DO_SKILL kit:forked"))
+    assert forked.outcome is Outcome.REPLY and "running in the background" in forked.text and "FORKED-" not in forked.text
+    entries = [json.loads(x) for x in (LOGS / rel).read_text().splitlines()]
+    prompts = [e for e in entries if e["type"] == "user" and isinstance(e["message"]["content"], str)]
+    assert [p["origin"]["kind"] for p in prompts] == ["human", "task-notification", "human"]
+    assert "FORKED-" in prompts[1]["message"]["content"]  # the skill's result: only in the self-started turn
+    assert sum(e.get("subtype") == "turn_duration" for e in entries) == 3  # two prompts, three turns
+    assert log.judge(0, prompt_digest("ping after fork")).text == "ECHO ping after fork" and not log.turn_open()

@@ -131,6 +131,8 @@ class AnthropicStub:
                 "DO_TOOLSEARCHKW": ("ToolSearch", {"query": arg, "max_results": 10}),
                 # Task 13.33: call the non-functional placeholder claude offers next to `--tools`.
                 "DO_PLACEHOLDER": ("DeferredToolPlaceholder", {}),
+                # Task 14.3: make the "model" run a skill by name.
+                "DO_SKILL": ("Skill", {"skill": arg}),
             }.get(kw)
             if call:
                 return self._stream(req, body, [("tool_use", call)], "tool_use")
