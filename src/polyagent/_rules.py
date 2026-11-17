@@ -9,7 +9,13 @@ import re
 
 from .errors import InvalidConfigError
 
-KINDS = ("codex", "copilot", "cursor", "claude")  # supported agent kinds; adapters live in ``kinds``
+KINDS = ("codex", "copilot", "claude")  # supported agent kinds; adapters live in ``kinds``
+# Kind names that v1 refuses with a message of their own (D7 "支持的 kind").
+UNSUPPORTED_KINDS = ("cursor", "cursor-agent")
+CURSOR_UNSUPPORTED = (
+    "cursor is not supported in polyagent v1: its self-update and its writes to the user's home directory "
+    "cannot be isolated, and its prompt guards do not hold; supporting it again is on the roadmap (see README)"
+)
 
 SESSION_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 AGENT_NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}")

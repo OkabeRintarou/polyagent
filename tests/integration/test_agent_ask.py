@@ -12,15 +12,14 @@ PONG = "Reply with exactly one word: PONG"
 FILES = {"alpha.txt": "the alpha value is 41\n", "beta.txt": "the beta value is 17\n"}
 MULTI = ("Use your file tools to read alpha.txt and beta.txt in the current directory, then answer with a "
          "markdown bullet list with one bullet per file, each giving the file name in bold and its number.")
-LOG_KINDS = ("codex", "copilot", "claude")
 
 
-@pytest.mark.parametrize("kind", ["codex", "copilot", "claude", "cursor"])
+@pytest.mark.parametrize("kind", ["codex", "copilot", "claude"])
 def test_pong_and_a_multi_step_markdown_answer(agent_lab, kind):
-    """Scenarios: 正常回复 / 会话日志可用 / 多步工具调用的回合 / 退回屏幕截取 (cursor)."""
+    """Scenarios: 正常回复 / 会话日志可用 / 多步工具调用的回合."""
     require_kind(kind)
     agent = agent_lab.start(kind, agent_lab.work(kind, files=FILES))
-    source = "session_log" if kind in LOG_KINDS else "screen"
+    source = "session_log"
     first = agent.ask_reply(PONG, 180)
     # codex opens its rollout only after the first message; the library binds it after submitting (D12,
     # task 13.15), so the first turn too comes from the session log.
@@ -28,8 +27,8 @@ def test_pong_and_a_multi_step_markdown_answer(agent_lab, kind):
     second = agent.ask_reply(MULTI, 300)
     assert second.source == source
     assert "41" in second.text and "17" in second.text
-    if source == "session_log":  # the final message verbatim, markdown kept
-        assert "**" in second.text and any(line.lstrip().startswith(("-", "*")) for line in second.text.splitlines())
+    # the final message verbatim, markdown kept
+    assert "**" in second.text and any(line.lstrip().startswith(("-", "*")) for line in second.text.splitlines())
 
 
 # copilot: a timeout so short that the first prompt is not in the session log yet when the second ask

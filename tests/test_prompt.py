@@ -9,8 +9,7 @@ from polyagent import kinds as K
 from polyagent.errors import InvalidPromptError
 
 POLICIES = ["full_auto", "read_only"]
-INPUT_AREA = {"codex": "› Ask Codex to do anything\n\n  gpt default · /tmp/repo\n",
-              "cursor": "  → Add a follow-up\n\n  Auto Balance   Run Everything\n"}
+INPUT_AREA = {"codex": "› Ask Codex to do anything\n\n  gpt default · /tmp/repo\n"}
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +50,7 @@ def H_err_timeout():
 
 
 @pytest.mark.parametrize("policy", POLICIES)
-@pytest.mark.parametrize("kind", ["codex", "claude", "cursor"])  # trusted-status kinds submit through herdr
+@pytest.mark.parametrize("kind", ["codex", "claude"])  # trusted-status kinds submit through herdr
 @pytest.mark.parametrize("text", ["x\x1by", "a\x00b", "a\rb", "a\x7fb", "a\x85b", "\x07"])
 def test_control_characters_are_refused(kind, policy, text, lock_home):
     """Scenario: 含控制字符的 prompt — nothing reaches the agent."""
@@ -64,7 +63,7 @@ def test_crlf_is_normalised():
 
 
 @pytest.mark.parametrize("policy", POLICIES)
-@pytest.mark.parametrize("kind", ["codex", "claude", "cursor"])
+@pytest.mark.parametrize("kind", ["codex", "claude"])
 def test_prompt_starting_with_a_dash(kind, policy, lock_home):
     """Scenario: 以连字符开头的 prompt — the text arrives (after the fixed guard) unchanged."""
     out = submitted(kind, policy, "-v please", lock_home)
@@ -75,7 +74,7 @@ def test_prompt_starting_with_a_dash(kind, policy, lock_home):
 
 @pytest.mark.parametrize("policy", POLICIES)
 @pytest.mark.parametrize("kind,text", [("claude", "  /help"), ("claude", "\t!touch x"), ("codex", "  !touch x"),
-                                       ("codex", " /exit"), ("cursor", "  !ls")])
+                                       ("codex", " /exit")])
 def test_prefix_after_leading_blanks_is_guarded(kind, policy, text, lock_home):
     """Scenario: 前导空白后的前缀 — judged by the first non-blank character."""
     out = submitted(kind, policy, text, lock_home)
@@ -88,24 +87,23 @@ def test_copilot_leading_blanks_get_the_guide_line():
 
 
 @pytest.mark.parametrize("policy", POLICIES)
-@pytest.mark.parametrize("kind,text", [("cursor", "/quit"), ("cursor", "  /model x"), ("cursor", "#remember"),
-                                       ("cursor", "@file"), ("codex", "#note"), ("codex", "$x"), ("codex", "?")])
+@pytest.mark.parametrize("kind,text", [("codex", "#note"), ("codex", "  #note"), ("codex", "$x"), ("codex", "?")])
 def test_unguardable_prefix_is_refused(kind, policy, text, lock_home):
     """Scenario: 无法防护的前缀."""
     assert submitted(kind, policy, text, lock_home) is None
 
 
 @pytest.mark.parametrize("policy", POLICIES)
-def test_multiline_prompt_to_cursor_is_refused(policy, lock_home):
-    """Scenario: 不支持多行的 kind."""
-    assert submitted("cursor", policy, "hello\nworld", lock_home) is None
-
-
-@pytest.mark.parametrize("policy", POLICIES)
 @pytest.mark.parametrize("kind", ["codex", "claude"])
-def test_multiline_prompt_is_one_message_elsewhere(kind, policy, lock_home):
+def test_multiline_prompt_is_one_message(kind, policy, lock_home):
     out = submitted(kind, policy, "first line\n/allow-all\n!touch x", lock_home)
     assert out == "first line\n/allow-all\n!touch x"
+
+
+@pytest.mark.parametrize("kind", K.KINDS)
+def test_every_kind_takes_multi_line_prompts(kind):
+    """Task 13.41: all v1 kinds take a multi-line prompt as one message; there is no multi-line refusal."""
+    assert PR.sanitize(K.adapter(kind), "first line\nsecond line").endswith("first line\nsecond line")
 
 
 @pytest.mark.parametrize("policy", POLICIES)
@@ -166,13 +164,13 @@ def test_invisible_characters_do_not_hide_a_prefix(kind, lead, prefix):
     assert out == f"{K.GUIDE_LINE_TEXT}\n{lead}{prefix}"
 
 
-@pytest.mark.parametrize("kind", ["codex", "cursor"])
+@pytest.mark.parametrize("kind", ["codex"])
 @pytest.mark.parametrize("lead", INVISIBLE)
 def test_leading_space_kinds_guard_a_prefix_after_invisible_characters(kind, lead):
     """D10 step 3: the first effective character decides; the kind's own rule then applies (guard or refuse)."""
     assert PR.sanitize(K.adapter(kind), lead + "!touch pwned") == f" {lead}!touch pwned"
     with pytest.raises(InvalidPromptError):
-        PR.sanitize(K.adapter(kind), lead + ("/exit" if kind == "cursor" else "#x"))
+        PR.sanitize(K.adapter(kind), lead + "#x")
 
 
 @pytest.mark.parametrize("ch", ["\ufeff", "\u200b", "\u2060", "\u200e", "\u202e", "\u00a0", "\u2003", "\u2028",

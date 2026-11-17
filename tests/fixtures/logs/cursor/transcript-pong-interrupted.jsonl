@@ -1,3 +1,0 @@
-{"role": "user", "message": {"content": [{"type": "text", "text": "<timestamp>Monday, Nov 16, 2026, 3:15 PM (UTC+8)</timestamp>\n<user_query>\nReply with exactly the word PONG and nothing else.\n</user_query>"}]}}
-{"role": "assistant", "message": {"content": [{"type": "text", "text": "PONG"}]}}
-{"type": "turn_ended", "status": "aborted", "error": "User aborted/interrupted manually."}

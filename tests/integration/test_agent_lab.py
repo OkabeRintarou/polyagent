@@ -2,15 +2,14 @@
 
 import os
 import secrets
-import shutil
 import stat
 import subprocess
 import time
 
 import pytest
 
-from .agentlab import (HOME, NONCE_VAR, AgentLab, UserFileGuard, _norm, claude_secrets, digest_diff, owned,
-                       preflight, session_names, tree_digest, user_config_digest)
+from .agentlab import (HOME, NONCE_VAR, AgentLab, _norm, claude_secrets, digest_diff, owned, preflight,
+                       session_names, user_config_digest)
 
 pytestmark = pytest.mark.integration
 
@@ -40,15 +39,14 @@ def test_lab_tears_everything_down_after_an_exception(real_herdr):
 
 def test_isolated_homes_carry_login_fields_only(real_herdr):
     with AgentLab(real_herdr, tag="homes") as lab:
-        for kind in ("codex", "claude", "copilot", "cursor"):
+        for kind in ("codex", "claude", "copilot"):
             try:
                 lab.prepare(kind)
             except pytest.skip.Exception:
                 pass  # no login state of that kind on this host
         assert lab._prepared, "no kind could be prepared"
         for kind in lab._prepared:
-            var = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "copilot": "COPILOT_HOME",
-                   "cursor": "CURSOR_CONFIG_DIR"}[kind]
+            var = {"codex": "CODEX_HOME", "claude": "CLAUDE_CONFIG_DIR", "copilot": "COPILOT_HOME"}[kind]
             assert stat.S_IMODE(os.stat(lab.homes[var]).st_mode) == 0o700, var
         secrets = claude_secrets()
         for path in lab.homes.values():
@@ -81,51 +79,20 @@ def test_shim_still_refuses_calls_outside_the_temp_session(real_herdr):
     assert lab.problems == []
 
 
-def test_guard_restores_and_refuses_a_leftover_backup(tmp_path):
-    home, store = tmp_path / "home", tmp_path / "backup"
-    (home / ".cursor" / "sandbox-policies").mkdir(parents=True)
-    (home / ".cursor" / "sandbox-policies" / "a.walk").write_text("original")
-    before = user_config_digest(home)
-    with pytest.raises(RuntimeError):
-        with UserFileGuard([".cursor/sandbox-policies", ".cursor/absent.json"], home=home, root=store):
-            (home / ".cursor" / "sandbox-policies" / "a.walk").write_text("changed by the agent")
-            (home / ".cursor" / "sandbox-policies" / "new.walk").write_text("new")
-            (home / ".cursor" / "absent.json").write_text("{}")
-            raise RuntimeError("agent failed")
-    assert digest_diff(before, user_config_digest(home)) == []
-    assert not (home / ".cursor" / "absent.json").exists() and not store.exists()
-    (store / "current").mkdir(parents=True)  # a backup an earlier run did not restore
-    with pytest.raises(pytest.fail.Exception, match="still at"):
-        with UserFileGuard([".cursor/sandbox-policies"], home=home, root=store):
-            pass
-    assert (store / "current").exists()  # left for the human, never overwritten
-
-
 def test_digest_sees_config_install_and_link_changes(tmp_path):
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
     (home / ".codex" / "config.toml").write_text("a")
     (home / ".local" / "bin").mkdir(parents=True)
-    (home / ".local" / "share" / "cursor-agent" / "versions" / "1").mkdir(parents=True)
-    (home / ".local" / "bin" / "cursor-agent").symlink_to(home / ".local" / "share" / "cursor-agent" / "versions" / "1")
+    (home / ".local" / "share" / "claude" / "versions" / "1").mkdir(parents=True)
+    (home / ".local" / "bin" / "claude").symlink_to(home / ".local" / "share" / "claude" / "versions" / "1")
     a = user_config_digest(home)
     (home / ".codex" / "config.toml").write_text("b")
-    (home / ".local" / "share" / "cursor-agent" / "versions" / "2").mkdir()
-    (home / ".local" / "bin" / "cursor-agent").unlink()
-    (home / ".local" / "bin" / "cursor-agent").symlink_to(home / ".local" / "share" / "cursor-agent" / "versions" / "2")
+    (home / ".local" / "share" / "claude" / "versions" / "2").mkdir()
+    (home / ".local" / "bin" / "claude").unlink()
+    (home / ".local" / "bin" / "claude").symlink_to(home / ".local" / "share" / "claude" / "versions" / "2")
     changed = digest_diff(a, user_config_digest(home))
-    assert {".codex/config.toml", ".local/share/cursor-agent/versions", ".local/bin/cursor-agent"} <= set(changed)
-
-
-def test_guard_refuses_symlinks_inside_guarded_paths(tmp_path):
-    home = tmp_path / "home"
-    (home / ".cursor" / "sandbox-policies").mkdir(parents=True)
-    (tmp_path / "elsewhere").write_text("real target")
-    (home / ".cursor" / "sandbox-policies" / "link").symlink_to(tmp_path / "elsewhere")
-    with pytest.raises(pytest.fail.Exception, match="symbolic links"):
-        with UserFileGuard([".cursor/sandbox-policies"], home=home, root=tmp_path / "backup"):
-            pass
-    assert not (tmp_path / "backup").exists()
+    assert {".codex/config.toml", ".local/share/claude/versions", ".local/bin/claude"} <= set(changed)
 
 
 def test_reaper_only_touches_processes_that_inherited_the_lab_nonce(real_herdr, tmp_path):
@@ -170,13 +137,10 @@ def test_escapes_outside_the_watched_files_are_found(real_herdr, tmp_path):
         content.write_text(f"session started in {lab.root}/w/x\n")  # a log that only mentions it
         top = home / f"notes-{lab.root.name}.txt"  # a regular file at the top of the home directory
         top.write_text("")
-        allowed = home / ".cursor" / "ai-tracking" / f"{lab.root.name}.db"  # cursor may name it there
-        allowed.parent.mkdir(parents=True)
-        allowed.write_text(str(lab.root))
     problems = " ".join(lab.problems)
     assert "carry its name" in problems
     assert str(cache / f"-tmp-{_norm(lab.root.name)}-w-claude") in problems and str(content) in problems
-    assert str(top) in problems and str(allowed) not in problems
+    assert str(top) in problems
 
 
 def test_preflight_reports_leftovers_of_a_killed_run(real_herdr, tmp_path):
@@ -191,105 +155,6 @@ def test_preflight_reports_leftovers_of_a_killed_run(real_herdr, tmp_path):
         proc.kill()
         proc.wait()
         (tmp_path / "pa-it-killed-abc123").rmdir()
-
-
-def test_guard_copy_failure_leaves_no_backup(tmp_path):
-    """Review C5: a backup that fails half-way leaves nothing that a later run would take for a backup."""
-    home, store = tmp_path / "home", tmp_path / "backup"
-    guarded = home / ".cursor" / "ai-tracking"
-    guarded.mkdir(parents=True)
-    (guarded / "ok.db").write_text("x")
-    (guarded / "locked.db").write_text("y")
-    (guarded / "locked.db").chmod(0)
-    try:
-        with pytest.raises(Exception):
-            with UserFileGuard([".cursor/ai-tracking"], home=home, root=store):
-                pass
-        assert not (store / "current").exists() and list(store.iterdir()) == []
-    finally:
-        (guarded / "locked.db").chmod(0o600)
-
-
-def test_tree_digest_sees_names_content_and_links(tmp_path):
-    (tmp_path / "a").mkdir()
-    (tmp_path / "a" / "f").write_text("1")
-    before = tree_digest(tmp_path)
-    (tmp_path / "a" / "f").write_text("2")
-    (tmp_path / "new").write_text("")
-    (tmp_path / "ln").symlink_to(tmp_path / "a")
-    assert set(digest_diff(before, tree_digest(tmp_path))) == {"a/f", "new", "ln"}
-
-
-def test_foreign_cursor_check_ignores_commands_that_mention_the_name():
-    from .agentlab import foreign_cursor_processes
-
-    p = subprocess.Popen(["bash", "-c", "sleep 30 # cursor-agent mentioned only"])
-    try:
-        assert p.pid not in foreign_cursor_processes()
-    finally:
-        p.kill()
-        p.wait()
-
-
-def test_cursor_sockets_left_by_the_lab_are_removed_others_kept(tmp_path):
-    """cursor ignores TMPDIR for its askpass sockets: dead ones created during the lab are removed, ones
-    that existed before or are still bound are left (the latter reported)."""
-    import socket
-
-    from .agentlab import clean_cursor_sockets
-
-    old = tmp_path / "cursor-askpass-old.sock"
-    old.write_text("")
-    before = set(tmp_path.glob("cursor-askpass-*"))
-    since = time.time() - 1
-    dead, live = tmp_path / "cursor-askpass-dead.sock", tmp_path / "cursor-askpass-live.sock"
-    s1 = socket.socket(socket.AF_UNIX)
-    s1.bind(str(dead))
-    s1.close()
-    s2 = socket.socket(socket.AF_UNIX)
-    s2.bind(str(live))
-    s2.listen()
-    try:
-        removed, problems = clean_cursor_sockets(before, since, tmp=tmp_path)
-        assert removed == ["cursor-askpass-dead.sock"] and not dead.exists()
-        assert old.exists() and live.exists() and any("still bound" in p for p in problems)
-    finally:
-        s2.close()
-
-
-def test_guard_restores_entry_by_entry(tmp_path):
-    """D17 / review A9: only entries that differ are written back; untouched ones keep their time."""
-    home = tmp_path / "home"
-    d = home / ".cursor" / "sandbox-policies" / "walk-cache"
-    d.mkdir(parents=True)
-    (d / "same.walk").write_text("same")
-    (d / "changed.walk").write_text("before")
-    os.utime(d / "same.walk", (1_000_000_000, 1_000_000_000))
-    with UserFileGuard([".cursor/sandbox-policies"], home=home, root=tmp_path / "backup"):
-        (d / "changed.walk").write_text("after")
-        (d / "new.walk").write_text("new")
-        (d / "newdir").mkdir()
-    assert (d / "changed.walk").read_text() == "before" and not (d / "new.walk").exists()
-    assert not (d / "newdir").exists() and os.stat(d / "same.walk").st_mtime == 1_000_000_000
-
-
-def test_cursor_state_differences_only_inside_the_closed_list(tmp_path):
-    from .agentlab import cursor_state, cursor_state_diff
-
-    home = tmp_path / "home"
-    for rel in (".cursor/ai-tracking", ".cursor/skills-cursor", ".config/cursor", ".local/share/cursor-agent/v1"):
-        (home / rel).mkdir(parents=True)
-    (home / ".cursor/ai-tracking/db").write_text("a")
-    (home / ".cursor/hooks.json").write_text("{}")
-    before = cursor_state(home)
-    (home / ".cursor/ai-tracking/db").write_text("b")  # allowed to change
-    (home / ".cursor/skills-cursor/new.md").write_text("x")  # allowed to change
-    assert cursor_state_diff(before, cursor_state(home)) == []
-    (home / ".cursor/hooks.json").write_text('{"x": 1}')
-    (home / ".local/share/cursor-agent/v1/.running").mkdir()
-    (home / ".local/share/cursor-agent/v1/.running/123").write_text("")
-    assert set(cursor_state_diff(before, cursor_state(home))) == {
-        ".cursor/hooks.json", ".local/share/cursor-agent/v1/.running", ".local/share/cursor-agent/v1/.running/123"}
 
 
 def test_preflight_reports_a_left_over_test_session(real_herdr):
@@ -384,50 +249,18 @@ def test_escape_check_counts_only_the_current_users_entries(tmp_path):
     assert find_escapes(root, 0, uid=os.getuid() + 1, **args) == []
 
 
-def test_cursor_socket_is_kept_when_bindings_cannot_be_read(tmp_path, monkeypatch):
-    import socket
-
+def test_preflight_ignores_other_users(tmp_path, monkeypatch):
     from . import agentlab
 
-    before = set(tmp_path.glob("cursor-askpass-*"))
-    dead = tmp_path / "cursor-askpass-dead.sock"
-    s = socket.socket(socket.AF_UNIX)
-    s.bind(str(dead))
-    s.close()
-    (tmp_path / "cursor-askpass-plain").write_text("")  # not a socket: never touched
-    monkeypatch.setattr(agentlab, "bound_unix_paths", lambda: None)
-    removed, problems = agentlab.clean_cursor_sockets(before, time.time() - 5, tmp=tmp_path)
-    assert removed == [] and dead.exists() and (tmp_path / "cursor-askpass-plain").exists()
-    assert any("could not be read" in p for p in problems)
-
-
-def test_preflight_ignores_other_users_and_separates_half_finished_copies(tmp_path, monkeypatch):
-    from . import agentlab
-
-    tmp, store = tmp_path / "tmp", tmp_path / "backup"
+    tmp = tmp_path / "tmp"
     (tmp / "pa-it-theirs-1").mkdir(parents=True)
     (tmp / "pa-it-mine-1").mkdir()
-    (store / "staging-abc").mkdir(parents=True)
     real_uid = agentlab._uid_of
     monkeypatch.setattr(agentlab, "_uid_of",
                         lambda p: os.getuid() + 1 if "theirs" in str(p) else real_uid(p))
     monkeypatch.setattr(agentlab, "session_names", lambda real: set())
-    problems = agentlab.preflight("herdr", tmp=tmp, backup_root=store)
+    problems = agentlab.preflight("herdr", tmp=tmp)
     text = " ".join(problems)
     assert "pa-it-mine-1" in text and "pa-it-theirs-1" not in text
-    assert "half-finished" in text and "complete backup" not in text
-    (store / "current").mkdir()
-    assert any("complete backup" in p for p in agentlab.preflight("herdr", tmp=tmp, backup_root=store))
 
 
-def test_foreign_cursor_check_ignores_other_programs_named_agent(tmp_path):
-    from .agentlab import foreign_cursor_processes
-
-    exe = tmp_path / "agent"
-    exe.symlink_to(shutil.which("sleep"))
-    p = subprocess.Popen([str(exe), "30"])
-    try:
-        assert p.pid not in foreign_cursor_processes()
-    finally:
-        p.kill()
-        p.wait()

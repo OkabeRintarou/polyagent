@@ -47,6 +47,8 @@ def test_marker_round_trip():
         "polyagent:1:rev:codex:ro:-:-:5:extra",
         "polyagent:1:rev:codex:rw:-:-:5",
         "polyagent:1:rev:foo:ro:-:-:5",
+        "polyagent:1:rev:cursor:fa:-:-:5",  # task 13.41: cursor is not a v1 kind
+        "polyagent:1:rev:cursor-agent:fa:-:-:5",
         "polyagent:1:Rev:codex:ro:-:-:5",
         "polyagent:1:rev:codex:ro:-:-:-5",
         "polyagent:1:rev:codex:ro:-:-:５",
@@ -85,8 +87,9 @@ def closed(fake):
 
 def test_foreign_resources_untouched(pa, fake):
     """Scenario: 非本库资源不受影响 (incl. a workspace whose marker was renamed away)."""
-    fake.workspaces = [ws("w1", "manual"), ws("w2", "my renamed ws"), ws("w3", "polyagent:1:manual")]
-    fake.agents = [agent("manual", "w1")]
+    fake.workspaces = [ws("w1", "manual"), ws("w2", "my renamed ws"), ws("w3", "polyagent:1:manual"),
+                       ws("w4", "polyagent:1:old:cursor:fa:-:-:5")]  # task 13.41: left to be closed by hand
+    fake.agents = [agent("manual", "w1"), agent("old", "w4")]
     assert pa.owned_workspaces() == []
     assert pa.cleanup() == []
     assert pa.cleanup(older_than=10**12) == []

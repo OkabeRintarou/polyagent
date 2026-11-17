@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from polyagent.errors import InvalidPromptError, PolicyNotSupportedError
+from polyagent.errors import PolicyNotSupportedError
 
 from .agentlab import require_kind
 
@@ -69,16 +69,6 @@ def test_copilot_help_after_leading_blanks(agent_lab):
     agent = agent_lab.start("copilot", agent_lab.work("copilot"))
     agent.ask("  /help", 300)
     assert "PONG" in agent.ask(PONG, 300)
-
-
-def test_cursor_refuses_slash_and_multi_line_prompts(agent_lab):
-    """Scenarios: 无法防护的前缀 / 不支持多行的 kind — nothing reaches the agent."""
-    require_kind("cursor")
-    agent = agent_lab.start("cursor", agent_lab.work("cursor"))
-    for text in ("/help", "first line\nsecond line"):
-        with pytest.raises(InvalidPromptError):
-            agent.ask(text, 30)
-    assert not [c for c in agent_lab.calls() if c[2:4] == ["agent", "prompt"]]
 
 
 @pytest.mark.parametrize("kind", sorted(LOOSEN))

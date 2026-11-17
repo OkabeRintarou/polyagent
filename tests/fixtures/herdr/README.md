@@ -125,9 +125,9 @@ $ herdr --session $S workspace close w1         # rc=0
 
 ## 任务 3.1（agent 启动相关，阶段 2）
 
-环境：herdr 0.9.5；codex 0.167.0、copilot 1.0.112、claude 2.1.322、cursor-agent 2026.11.10。
+环境：herdr 0.9.5；codex 0.167.0、copilot 1.0.112、claude 2.1.322。
 全部在随机临时 session 中进行，agent 的配置目录隔离到 0700 临时目录（`CODEX_HOME`、`COPILOT_HOME`、
-`CLAUDE_CONFIG_DIR`、`CURSOR_CONFIG_DIR`/`CURSOR_DATA_DIR`，cursor 另在 pane 内导出 `XDG_CONFIG_HOME`）。
+`CLAUDE_CONFIG_DIR`）。
 
 ### 启动命令的输入形式与 `AGENT_ARG` 原样传递
 
@@ -137,9 +137,8 @@ herdr 把启动命令作为一行 shell 输入敲进 pane，参数用 POSIX 单�
 $ codex -c 'polyagent_probe=a b (c) "q" '\''r'\'' $(touch PWNED1) ;touch PWNED2 `touch PWNED3` & | > x < * ? ~ $HOME \ end' --no-alt-screen
 ```
 
-`pane process-info` 显示的 argv 与传入值逐字节相同（codex、claude、copilot、cursor 都一样），工作目录中没有出现
+`pane process-info` 显示的 argv 与传入值逐字节相同（codex、claude、copilot 都一样），工作目录中没有出现
 `PWNED*` 文件。copilot 的 `--name` 拒绝含 `"` 的值（这是 copilot 自己的校验，与 herdr 无关）。
-cursor 的前台进程是 `cursor-agent --use-system-ca <…>/index.js <args>`。
 
 ### 别名与函数
 
@@ -190,9 +189,8 @@ codex 空闲时收到 `C-c` 会直接退出（打印 `resume <id>`）。
 ### 其它
 
 - 服务器环境中的 `XDG_CONFIG_HOME` 会让 herdr 自己把 session 目录移到 `$XDG_CONFIG_HOME/herdr/sessions/`，
-  客户端（未设该变量）随即连不上 server。cursor 的隔离因此只能在 pane 内导出 `XDG_CONFIG_HOME`。
+  客户端（未设该变量）随即连不上 server。
 - herdr 对 copilot 的状态识别：每次 `agent prompt --wait` 都返回 `agent_prompt_stalled`，且 copilot 工作中 `agent get` 仍报 `idle`。
-- herdr 对 cursor：启动时目录信任对话框仍在屏幕上，`agent start` 已返回就绪。
 
 ### `XDG_CONFIG_HOME` 搬走 session 目录（任务 13.9，只用 herdr，herdr 0.9.5）
 

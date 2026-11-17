@@ -128,9 +128,6 @@ def _member_spec(spec: object, who: str) -> AgentSpec:
         raise InvalidConfigError(f"{who}: spec must be an AgentSpec")
     if spec.policy == ToolPolicy.FULL_AUTO.value:
         raise InvalidConfigError(f"{who}: discussion members always run read_only; full_auto is not allowed")
-    if not K.adapter(spec.kind).prompt_guard.multiline:
-        raise InvalidConfigError(f"{who}: {spec.kind} cannot take multi-line prompts, so it cannot be a "
-                                 "discussion member")
     return spec
 
 

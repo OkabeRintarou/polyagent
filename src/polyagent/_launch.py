@@ -59,8 +59,8 @@ REASONS = {
 
 
 def needs_prep(spec: AgentSpec, adapter: K.KindAdapter) -> bool:
-    """D6: always under read_only; under full_auto only with variables, a provider or pre-start variables."""
-    return spec.policy == "read_only" or bool(spec.env) or spec.provider is not None or bool(adapter.prestart_env)
+    """D6: always under read_only; under full_auto only with variables or a provider."""
+    return spec.policy == "read_only" or bool(spec.env) or spec.provider is not None
 
 
 def check_shell(client: H.HerdrClient, pane_id: str) -> None:
@@ -111,7 +111,6 @@ def prep_script(spec: AgentSpec, adapter: K.KindAdapter) -> str:
         if adapter.permission_env_vars:
             lines.append(f"{c} unset {_quote_names(list(adapter.permission_env_vars))} 2>/dev/null")
     exports: dict[str, str] = dict(adapter.pane_env)  # first: a caller value of the same name wins (D6)
-    exports.update(adapter.prestart_env)
     exports.update(spec.env)
     family = ""
     if spec.provider is not None:

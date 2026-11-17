@@ -1,4 +1,4 @@
-"""polyagent: drive locally installed coding-agent CLIs (codex, copilot, cursor, claude) through herdr
+"""polyagent: drive locally installed coding-agent CLIs (codex, copilot, claude) through herdr
 from Python, and let several of them discuss a requirement under a coordinator agent.
 
 Read the README before deploying it. In short:

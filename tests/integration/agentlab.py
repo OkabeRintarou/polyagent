@@ -3,19 +3,15 @@
 What it guarantees for every test that uses it:
 
 * a random ``polyagent-test-*`` herdr session whose server the lab starts itself, behind the guarding
-  shim, with ``CODEX_HOME``, ``CLAUDE_CONFIG_DIR``, ``COPILOT_HOME``, ``CURSOR_CONFIG_DIR`` and
-  ``CURSOR_DATA_DIR`` pointing at 0700 directories under one ``mktemp`` root (cursor's auth file
-  follows ``XDG_CONFIG_HOME``, which is exported in the pane only: in the server environment it
-  would move herdr's own session directory);
+  shim, with ``CODEX_HOME``, ``CLAUDE_CONFIG_DIR`` and ``COPILOT_HOME`` pointing at 0700 directories
+  under one ``mktemp`` root;
 * login state copied field by field from the user's configuration (copilot: login keys; codex: the
-  model provider; cursor: auth file and model; claude: the repository-root ``claude`` settings file,
-  which is git-excluded and read at run time only);
-* user files that cannot be isolated are backed up first and restored in ``finally``; a backup left
-  by an earlier run aborts the lab;
+  model provider; claude: the repository-root ``claude`` settings file, which is git-excluded and read
+  at run time only);
 * content digests of the user's agent configuration, installs and entry links are compared before
   and after: any difference fails the test;
 * ``TMPDIR`` and ``XDG_CACHE_HOME`` of the server (and so of every pane and agent) point under the
-  root too (claude and cursor write logs, sockets and caches there; herdr itself ignores both), and so
+  root too (claude writes logs, sockets and caches there; herdr itself ignores both), and so
   does ``HISTFILE``: a pane's interactive shell writes the command lines herdr typed to it when it
   exits, and the library unsets the history file only in panes it prepares (D6, D17);
 * teardown, also after a failure: close the agents, stop and delete the session, kill processes that
@@ -23,12 +19,11 @@ What it guarantees for every test that uses it:
 * a check that does not depend on any list of known paths: after teardown, no entry in the user's
   configuration directories, ``~/.cache``, the system temporary directory or the regular files at the
   top of the home directory may carry the root's name, and no file there changed during the lab may
-  contain it. Only the current user's entries count; cursor's "allowed to change" paths are left out.
-  Limits: ``LEAK_DEPTH`` directory levels per area, files up to ``LEAK_MAX_BYTES``. In addition the
-  library's preparation sentinel must not appear more often in the user's shell history files than
-  before. For cursor, the whole ``~/.cursor`` tree (names and content) must be as before;
+  contain it. Only the current user's entries count. Limits: ``LEAK_DEPTH`` directory levels per area,
+  files up to ``LEAK_MAX_BYTES``. In addition the library's preparation sentinel must not appear more
+  often in the user's shell history files than before;
 * a pre-flight check per pytest session: leftovers of a run that was killed (processes with a lab
-  nonce, ``pa-it-*`` roots, ``polyagent-test-*`` sessions, a backup) stop the run with instructions.
+  nonce, ``pa-it-*`` roots, ``polyagent-test-*`` sessions) stop the run with instructions.
 
 Nothing here prints credential values; only names.
 """
@@ -74,31 +69,18 @@ STRICT = [
     ".copilot/mcp-config.json", ".copilot/lsp-config.json", ".copilot/hooks", ".copilot/agents", ".copilot/skills",
     ".claude/settings.json", ".claude/settings.local.json", ".claude/claude.json", ".claude/CLAUDE.md",
     ".claude/agents", ".claude/commands",
-    ".cursor/cli-config.json", ".cursor/hooks.json", ".cursor/mcp.json", ".cursor/permissions.json",
-    ".cursor/sandbox-policies",
-    ".config/cursor/auth.json", ".config/cursor/cli-config.json",
     ".bashrc", ".profile", ".bash_profile", ".zshrc",
 ]
 # ~/.claude.json is rewritten by every claude run of the user: only the keys that grant something.
 JSON_KEYS = {".claude.json": ("projects", "customApiKeyResponses", "mcpServers", "bypassPermissionsModeAccepted")}
-# Installs and entry links (cursor upgrades itself at start unless D6's pre-start variable is set).
-INSTALL_LINKS = [".local/bin/codex", ".local/bin/claude", ".local/bin/copilot", ".local/bin/cursor-agent",
-                 ".local/bin/agent", ".local/bin/cursor", ".codex/packages/standalone/current"]
-INSTALL_DIRS = [".local/share/cursor-agent/versions", ".local/share/claude/versions"]
-# cursor writes user paths although its configuration is isolated (design D17, closed list):
-# - backed up and restored entry by entry: the walk cache (phase-2 finding);
-# - allowed to change, not restored: the AI code tracking database, the skills it syncs and the
-#   team-managed hooks it re-syncs (restoring them would hand the user stale or lost data);
-# - its per-process markers in the install directory: only the lab's own are removed (D17, A9).
-# Every other difference in ~/.cursor, its auth directory or its install directory fails the test.
-CURSOR_UNISOLATED = [".cursor/sandbox-policies"]
-CURSOR_ALLOWED_CHANGES = (".cursor/ai-tracking", ".cursor/skills-cursor", ".cursor/managed")
+# Installs and entry links.
+INSTALL_LINKS = [".local/bin/codex", ".local/bin/claude", ".local/bin/copilot", ".codex/packages/standalone/current"]
+INSTALL_DIRS = [".local/share/claude/versions"]
 # Every pane: claude must not update the user's install (it ignores the isolated autoUpdates=false).
 NO_SELF_UPDATE = {"DISABLE_AUTOUPDATER": "1"}
-CURSOR_SWITCH = "POLYAGENT_INTEGRATION_CURSOR"  # real cursor runs only with this set to 1 (D17)
 # Where an escape is looked for by name and content after every lab (relative to the home directory),
 # plus the system temporary directory.
-LEAK_AREAS = [".codex", ".copilot", ".claude", ".cursor", ".config", ".cache", ".local/state", ".local/share"]
+LEAK_AREAS = [".codex", ".copilot", ".claude", ".config", ".cache", ".local/state", ".local/share"]
 LEAK_DEPTH = 5
 LEAK_MAX_BYTES = 8 << 20
 # The library's pane preparation command line ends with this sentinel (``_launch.prep_command``): its count
@@ -111,30 +93,6 @@ SERVER_ENV_KEEP = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE
                    "XDG_RUNTIME_DIR", "HERDR_CONFIG_PATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "SSL_CERT_DIR",
                    "REQUESTS_CA_BUNDLE", "http_proxy", "https_proxy", "no_proxy", "HTTP_PROXY", "HTTPS_PROXY",
                    "NO_PROXY", "all_proxy", "ALL_PROXY"}
-
-
-def cursor_running_dir() -> Path | None:
-    target = Path(os.path.realpath(HOME / ".local/bin/cursor-agent"))
-    return target.parent / ".running" if HOME in target.parents else None
-
-
-def cursor_state(home: Path = HOME) -> dict[str, Any]:
-    """Full manifest of cursor's user state: ~/.cursor and its auth directory by content, its install
-    directory by name, size and time (it is large)."""
-    out: dict[str, Any] = {}
-    for rel in (".cursor", ".config/cursor"):
-        out.update({f"{rel}/{k}": v for k, v in tree_digest(home / rel).items()})
-    install = home / ".local/share/cursor-agent"
-    if install.is_dir():
-        out.update({f".local/share/cursor-agent/{p}": (size, mtime) for p, size, mtime in _stat_tree(install)})
-    return out
-
-
-def cursor_state_diff(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
-    """Differences outside the paths cursor is allowed to change."""
-    return [k for k in digest_diff(before, after)
-            if not any(k == a or k.startswith(a + "/") for a in CURSOR_ALLOWED_CHANGES)]
-BACKUP_ROOT = locks.user_home() / ".cache" / "polyagent-test-backup"
 
 
 # ---- digests -----------------------------------------------------------------------------------
@@ -213,25 +171,6 @@ def digest_diff(a: dict[str, Any], b: dict[str, Any]) -> list[str]:
     return sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
 
 
-def tree_digest(root: Path) -> dict[str, Any]:
-    """Every entry under ``root`` by relative path: file content digests, links, directories."""
-    out: dict[str, Any] = {}
-    for dirpath, dirs, files in os.walk(root):
-        for n in dirs + files:
-            p = Path(dirpath) / n
-            rel = str(p.relative_to(root))
-            if p.is_symlink():
-                out[rel] = ("link", os.readlink(p))
-            elif n in dirs:
-                out[rel] = "dir"
-            else:
-                try:
-                    out[rel] = _sha(p)
-                except OSError:
-                    out[rel] = "unreadable"
-    return out
-
-
 def _norm(text: str) -> str:
     """Names derived from a path replace its punctuation (claude: `/tmp/pa-it-x_y` -> `-tmp-pa-it-x-y`)."""
     return re.sub(r"[^A-Za-z0-9]", "-", text)
@@ -243,12 +182,10 @@ def find_escapes(root: Path, since: float, home: Path = HOME, tmp: Path | None =
     punctuation replaced), or a file changed since ``since`` whose content contains the root path or
     name. Searched in the user's configuration directories, ``~/.cache``, the temporary directory
     (``LEAK_DEPTH`` levels each) and the regular files at the top of the home directory. Only entries
-    of ``uid`` (default: the current user) count; cursor's "allowed to change" paths are left out
-    (D17: they may legitimately name a lab directory)."""
+    of ``uid`` (default: the current user) count."""
     uid = os.getuid() if uid is None else uid
     token = _norm(root.name)
     needles = {str(root).encode(), root.name.encode()}
-    allowed = [home / a for a in CURSOR_ALLOWED_CHANGES]
     found = []
 
     def check(p: Path, is_file: bool) -> None:
@@ -256,7 +193,7 @@ def find_escapes(root: Path, since: float, home: Path = HOME, tmp: Path | None =
             st = os.lstat(p)
         except OSError:
             return
-        if st.st_uid != uid or any(p == a or a in p.parents for a in allowed):
+        if st.st_uid != uid:
             return
         if token in _norm(p.name):
             found.append(str(p))
@@ -276,7 +213,7 @@ def find_escapes(root: Path, since: float, home: Path = HOME, tmp: Path | None =
         base = len(area.parts)
         for dirpath, dirs, files in os.walk(area):
             here = Path(dirpath)
-            if here == root or root in here.parents or any(here == a or a in here.parents for a in allowed):
+            if here == root or root in here.parents:
                 dirs[:] = []
                 continue
             if len(here.parts) - base >= LEAK_DEPTH:
@@ -316,11 +253,10 @@ def _uid_of(p: Path) -> int | None:
         return None
 
 
-def preflight(real_herdr: str, tmp: Path | None = None, backup_root: Path | None = None) -> list[str]:
+def preflight(real_herdr: str, tmp: Path | None = None) -> list[str]:
     """Leftovers of an earlier run that was killed before its teardown (review C3). Nothing is removed
-    here: they may hold copied credentials or the user's backed-up files. Only the current user's
-    processes and roots count (another user's lab is not ours to report)."""
-    backup_root = backup_root or BACKUP_ROOT
+    here: they may hold copied credentials. Only the current user's processes and roots count (another
+    user's lab is not ours to report)."""
     problems = []
     lab_procs = []
     uid = os.getuid()
@@ -339,189 +275,7 @@ def preflight(real_herdr: str, tmp: Path | None = None, backup_root: Path | None
     if sessions:
         problems.append(f"herdr sessions of an earlier run are left: {sessions}; "
                         "`herdr session stop <name>` then `herdr session delete <name>`")
-    if (backup_root / "current").exists():
-        problems.append(f"a complete backup of the user's files from an earlier run is at {backup_root / 'current'}: "
-                        "restore it by hand (see manifest.json) and remove it")
-    staging = sorted(str(p) for p in backup_root.glob("staging-*")) if backup_root.is_dir() else []
-    if staging:
-        problems.append(f"half-finished backup copies of an earlier run are at {staging}: the user's files were "
-                        "not changed by them (the copy failed before the backup existed); remove them")
     return problems
-
-
-CURSOR_SOCKETS = "cursor-askpass-*"  # cursor ignores TMPDIR for these (phase-5 fix run)
-
-
-def bound_unix_paths() -> set[str] | None:
-    """Paths of bound unix sockets, or ``None`` when that cannot be read (then nothing is removed)."""
-    try:
-        lines = Path("/proc/net/unix").read_text().splitlines()[1:]
-    except OSError:
-        return None
-    return {parts[-1] for parts in (line.split() for line in lines) if len(parts) >= 8}
-
-
-def clean_cursor_sockets(before: set[Path], since: float, tmp: Path | None = None) -> tuple[list[str], list[str]]:
-    """cursor's askpass sockets created during the lab in the system temporary directory: the dead ones
-    (no process has them bound) are the lab's leftovers and are removed; a bound one is reported.
-    Only entries that are new, belong to the current user and really are sockets are considered;
-    when the binding information cannot be read nothing is removed and that is reported (D17).
-    Sockets that existed before the lab are never touched. Returns (removed, problems)."""
-    tmp = tmp or Path(tempfile.gettempdir())
-    bound = bound_unix_paths()
-    removed, problems = [], []
-    for p in sorted(set(tmp.glob(CURSOR_SOCKETS)) - before):
-        try:
-            st = os.lstat(p)
-        except OSError:
-            continue
-        if st.st_mtime < since or st.st_uid != os.getuid() or not stat.S_ISSOCK(st.st_mode):
-            continue
-        if bound is None:
-            problems.append(f"cursor socket {p} left in place: the bound-socket table could not be read")
-            continue
-        if str(p) in bound:
-            problems.append(f"cursor socket {p} created during the lab is still bound")
-            continue
-        p.unlink(missing_ok=True)
-        removed.append(p.name)
-    return removed, problems
-
-
-def foreign_cursor_processes(nonce: str | None = None) -> list[int]:
-    """cursor-agent processes of the current user that are not the lab's: the user's own cursor would race
-    the backup/restore. Only cursor's executable counts: a process whose binary lies in cursor's install
-    directory, or whose first arguments name a file there; a command line that merely mentions the name
-    (a shell running a grep) or another program called `agent` does not (D17)."""
-    mark = f"{NONCE_VAR}=".encode()
-    install = str(HOME / ".local/share/cursor-agent") + os.sep
-    uid = os.getuid()
-    pids = []
-    for d in Path("/proc").iterdir():
-        if not d.name.isdigit() or _uid_of(d) != uid:
-            continue
-        try:
-            argv = (d / "cmdline").read_bytes().split(b"\0")
-        except OSError:
-            continue
-        try:
-            exe = os.path.realpath(os.readlink(d / "exe"))
-        except OSError:
-            exe = ""
-        ours = exe.startswith(install) or any(b"/cursor-agent/versions/" in a for a in argv[:3])
-        if ours and mark not in _environ(int(d.name)):
-            pids.append(int(d.name))
-    return pids
-
-
-# ---- backup / restore of user paths that cannot be isolated ----------------------------------------
-
-
-class UserFileGuard:
-    """Back up ``paths`` (relative to ``home``) before a test and restore them in ``finally``.
-
-    A backup directory left by an earlier run means that run did not restore: the guard refuses to
-    start (manual cleanup), so a second backup never overwrites the first."""
-
-    def __init__(self, paths: list[str], home: Path = HOME, root: Path | None = None):
-        self.paths, self.home = paths, home
-        self.root = root or BACKUP_ROOT
-        self.dir = self.root / "current"
-
-    def _refuse_links(self) -> None:
-        """A link inside a guarded path would let the agent write through it to a target the backup does
-        not hold; such a layout is refused instead of half-restored."""
-        for rel in self.paths:
-            p = self.home / rel
-            links = [p] if p.is_symlink() else []
-            if p.is_dir() and not p.is_symlink():
-                for dirpath, dirs, files in os.walk(p):
-                    links += [Path(dirpath) / n for n in dirs + files if (Path(dirpath) / n).is_symlink()]
-            if links:
-                pytest.fail(f"guarded user path {rel} contains symbolic links ({len(links)}); refusing to run",
-                            pytrace=False)
-
-    def __enter__(self) -> UserFileGuard:
-        self._refuse_links()
-        if self.dir.exists():
-            pytest.fail(f"a backup from an earlier integration run is still at {self.dir}; restore it by hand "
-                        "(it holds the user's files) and remove it before running again", pytrace=False)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        staging = Path(tempfile.mkdtemp(prefix="staging-", dir=self.root))
-        try:
-            self._copy(staging)
-            staging.rename(self.dir)  # a complete backup appears at once; a failed copy leaves no "current"
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
-        return self
-
-    def _copy(self, into: Path) -> None:
-        manifest = {}
-        for rel in self.paths:
-            src = self.home / rel
-            dst = into / "files" / rel
-            if src.is_dir():
-                shutil.copytree(src, dst, symlinks=True)
-                manifest[rel] = "dir"
-            elif src.exists():
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-                manifest[rel] = "file"
-            else:
-                manifest[rel] = "absent"
-        (into / "manifest.json").write_text(json.dumps(manifest))
-
-    def __exit__(self, *exc: object) -> None:
-        """Restore entry by entry (D17, review A9): only what differs from the backup is written back,
-        entries that appeared are removed, untouched entries are left as they are."""
-        manifest = json.loads((self.dir / "manifest.json").read_text())
-        for rel, kind in manifest.items():
-            target, saved = self.home / rel, self.dir / "files" / rel
-            if kind == "absent":
-                _remove(target)
-            elif kind == "file":
-                _restore_file(saved, target)
-            else:
-                _restore_tree(saved, target)
-        shutil.rmtree(self.dir)
-        with contextlib.suppress(OSError):
-            self.root.rmdir()
-
-
-def _remove(p: Path) -> None:
-    if p.is_dir() and not p.is_symlink():
-        shutil.rmtree(p)
-    elif p.exists() or p.is_symlink():
-        p.unlink()
-
-
-def _restore_file(saved: Path, target: Path) -> None:
-    if target.is_file() and not target.is_symlink() and _sha(target) == _sha(saved):
-        return
-    _remove(target)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(saved, target)
-
-
-def _restore_tree(saved: Path, target: Path) -> None:
-    if not target.is_dir() or target.is_symlink():
-        _remove(target)
-        shutil.copytree(saved, target, symlinks=True)
-        return
-    for dirpath, dirs, files in os.walk(target, topdown=True):
-        for n in list(dirs) + files:
-            t = Path(dirpath) / n
-            if not (saved / t.relative_to(target)).exists():
-                _remove(t)
-                if n in dirs:
-                    dirs.remove(n)
-    for dirpath, dirs, files in os.walk(saved):
-        for n in dirs:
-            (target / (Path(dirpath) / n).relative_to(saved)).mkdir(exist_ok=True)
-        for n in files:
-            src = Path(dirpath) / n
-            _restore_file(src, target / src.relative_to(saved))
 
 
 # ---- login state copied into isolated directories ----------------------------------------------------
@@ -573,6 +327,8 @@ def write_copilot_home(d: Path) -> None:
     src = json.loads("\n".join(line for line in text.splitlines() if not line.lstrip().startswith("//")))
     keep = {k: src[k] for k in ("firstLaunchAt", "loggedInUsers", "lastLoggedInUser", "authTokens") if k in src}
     _private(d / "config.json", json.dumps(keep))
+    # without it every test session is published to the account's GitHub agents list
+    _private(d / "settings.json", json.dumps({"remoteSessions": False, "remoteExport": False}))
 
 
 def _toml(v: Any) -> str:
@@ -644,22 +400,9 @@ def write_claude_home(d: Path) -> None:
     _private(d / "settings.json", json.dumps({}))
 
 
-def write_cursor_home(xdg: Path, cfg: Path, data: Path) -> None:
-    for x in (xdg / "cursor", cfg, data):
-        x.mkdir(mode=0o700, parents=True, exist_ok=True)
-    shutil.copy2(HOME / ".config/cursor/auth.json", xdg / "cursor/auth.json")
-    (xdg / "cursor/auth.json").chmod(0o600)
-    src = json.loads((HOME / ".cursor/cli-config.json").read_text())
-    keep = {k: src[k] for k in ("version", "model", "selectedModel", "hasChangedDefaultModel", "authInfo",
-                                "privacyCache") if k in src}
-    keep["permissions"] = {"allow": [], "deny": []}
-    _private(cfg / "cli-config.json", json.dumps(keep))
-
-
 LOGIN_SOURCES = {
     "copilot": [".copilot/config.json"],
     "codex": [".codex/config.toml"],
-    "cursor": [".config/cursor/auth.json", ".cursor/cli-config.json"],
     "claude": [],
 }
 
@@ -769,10 +512,6 @@ class AgentLab:
         self.name = f"polyagent-test-{secrets.token_hex(4)}"
         self.nonce = secrets.token_hex(16)
         self.owns_session = False
-        self._cursor_guard: UserFileGuard | None = None
-        self.cursor_before: dict[str, Any] | None = None
-        self.lab_pids: set[int] = set()  # recorded while the lab runs (cursor names its markers after them)
-        self.running_dir_existed = True
 
     # -- setup
     def __enter__(self) -> AgentLab:
@@ -797,23 +536,20 @@ class AgentLab:
         # The variables name every kind's isolated directory from the start (the server's environment is
         # fixed when it starts); a directory is filled with login state only when a test starts that kind.
         homes: dict[str, Path] = {"CODEX_HOME": cfg / "codex", "CLAUDE_CONFIG_DIR": cfg / "claude",
-                                  "COPILOT_HOME": cfg / "copilot", "CURSOR_CONFIG_DIR": cfg / "cursor-config",
-                                  "CURSOR_DATA_DIR": cfg / "cursor-data"}
+                                  "COPILOT_HOME": cfg / "copilot"}
         self._writers = {
             "codex": lambda: write_codex_home(cfg / "codex"),
             "claude": lambda: write_claude_home(cfg / "claude"),
             "copilot": lambda: write_copilot_home(cfg / "copilot"),
-            "cursor": lambda: write_cursor_home(cfg / "xdg", cfg / "cursor-config", cfg / "cursor-data"),
         }
         self._prepared: set[str] = set()
         cfg.mkdir(mode=0o700)
-        self.cursor_xdg = cfg / "xdg"
         for d in ("tmp", "cache"):
             (self.root / d).mkdir(mode=0o700)
         env = server_env(self.server_env)
         env["PATH"] = f"{self.root / 'shim'}{os.pathsep}{env.get('PATH', '')}"
         env.update({k: str(v) for k, v in homes.items()})
-        # claude and cursor write logs, sockets and caches there (phase-5 review C1); herdr ignores both.
+        # claude writes logs, sockets and caches there (phase-5 review C1); herdr ignores both.
         env["TMPDIR"] = str(self.root / "tmp")
         env["XDG_CACHE_HOME"] = str(self.root / "cache")
         # Pane shells write the typed command lines here when they exit, not to the user's history (D17).
@@ -855,16 +591,11 @@ class AgentLab:
         return d
 
     def spec(self, kind: str, policy: str | None = None, **kw: Any) -> AgentSpec:
-        """A spec with this lab's per-kind defaults: copilot's model, claude's provider, cursor's
-        pane-only XDG_CONFIG_HOME."""
+        """A spec with this lab's per-kind defaults: copilot's model, claude's provider."""
         if kind == "copilot":
             kw.setdefault("model", COPILOT_MODEL)
         if kind == "claude" and "provider" not in kw:
             kw["provider"] = claude_provider()
-        if kind == "cursor":
-            env = dict(kw.pop("env", {}) or {})
-            env.setdefault("XDG_CONFIG_HOME", str(self.cursor_xdg))
-            kw["env"] = env
         return AgentSpec(kind=kind, policy=policy, **kw)
 
     def prepare(self, kind: str) -> None:
@@ -884,38 +615,14 @@ class AgentLab:
     def start(self, kind: str, cwd: Path, policy: str | None = None, *, name: str | None = None,
               start_timeout: float = 90, **kw: Any):
         require_kind(kind, policy, login=not (kind == "claude" and "provider" in kw))
-        if kind == "cursor" and os.environ.get(CURSOR_SWITCH) != "1":  # checked before any login state is copied
-            pytest.skip(f"cursor: it writes into the user's ~/.cursor although its configuration is isolated "
-                        f"(design D17); set {CURSOR_SWITCH}=1 to run it")
         shell = os.path.basename(os.environ.get("SHELL", ""))
         if _launch.needs_prep(self.spec(kind, policy, **kw), K.adapter(kind)) and shell not in _launch.POSIX_SHELLS:
             pytest.skip(f"{kind}: the pane shell {shell!r} is refused for the environment script (task 13.17)")
         self.prepare(kind)
         spec = self.spec(kind, policy, **kw)
-        if kind == "cursor" and self._cursor_guard is None:
-            self._guard_cursor()
-        try:
-            agent = self.pa.start(spec, cwd, name=name, start_timeout=start_timeout)
-        finally:
-            self.lab_pids.update(pid for pid, _ in owned(self.nonce))
+        agent = self.pa.start(spec, cwd, name=name, start_timeout=start_timeout)
         self.agents.append(agent)
         return agent
-
-    def _guard_cursor(self) -> None:
-        """cursor writes into the user's ~/.cursor and its install directory although its configuration
-        is isolated: those paths are backed up and restored, and the whole ~/.cursor tree is compared."""
-        foreign = foreign_cursor_processes()
-        if foreign:
-            pytest.skip(f"cursor: the user's own cursor-agent is running (pids {foreign}); its writes would race "
-                        "the backup and restore of ~/.cursor")
-        self.cursor_before = cursor_state()
-        self.cursor_sockets_before = set(Path(tempfile.gettempdir()).glob(CURSOR_SOCKETS))
-        running = cursor_running_dir()
-        self.running_dir_existed = running is None or running.exists()
-        guard = UserFileGuard(CURSOR_UNISOLATED)
-        guard.__enter__()
-        self._cursor_guard = guard  # registered only once the backup exists (review C5)
-        self._cleanups.append(lambda: guard.__exit__(None, None, None))
 
     def on_cleanup(self, fn: Callable[[], None]) -> None:
         self._cleanups.append(fn)
@@ -938,8 +645,6 @@ class AgentLab:
             except BaseException as e:  # noqa: BLE001 - keep tearing down, report afterwards
                 problems.append(f"{what} failed: {e!r}")
 
-        self.lab_pids.update(pid for pid, _ in owned(self.nonce))  # cursor names its markers after its pid
-        lab_pids = set(self.lab_pids)
         for agent in reversed(self.agents):
             stage(f"closing {agent.name}", agent.close)
         if self.owns_session:
@@ -955,31 +660,6 @@ class AgentLab:
 
         stage("reaping", reap_owned)
 
-        def cursor_sockets() -> None:
-            if self.cursor_before is None:
-                return
-            removed, bad = clean_cursor_sockets(self.cursor_sockets_before, self.started_at)
-            problems.extend(bad)
-            if removed:
-                self.notes.append(f"removed {len(removed)} dead cursor socket(s) it left in the temporary "
-                                  f"directory (cursor ignores TMPDIR for them): {removed}")
-
-        stage("cursor sockets", cursor_sockets)
-
-        def cursor_markers() -> None:
-            running = cursor_running_dir()
-            if self.cursor_before is None or running is None or not running.is_dir():
-                return
-            for marker in running.iterdir():
-                if marker.name.isdigit() and int(marker.name) in lab_pids:
-                    marker.unlink()
-            if not self.running_dir_existed:  # created by this run: removed with it (D17)
-                try:
-                    running.rmdir()
-                except OSError:
-                    problems.append(f"{running} was created during the lab but holds markers of other processes")
-
-        stage("cursor process markers", cursor_markers)
         for fn in reversed(self._cleanups):
             stage("cleanup", fn)
         def remove_locks() -> None:
@@ -1001,14 +681,6 @@ class AgentLab:
                     problems.append(f"entries outside the lab root carry its name: {escaped}")
 
             stage("looking for escapes", check_escapes)
-
-        def check_cursor() -> None:
-            if self.cursor_before is not None:
-                changed = cursor_state_diff(self.cursor_before, cursor_state())
-                if changed:
-                    problems.append(f"cursor's user state changed outside the allowed paths: {changed}")
-
-        stage("checking ~/.cursor", check_cursor)
 
         def check_history() -> None:
             grown = history_growth(self.history_before, history_sentinels(self.home))

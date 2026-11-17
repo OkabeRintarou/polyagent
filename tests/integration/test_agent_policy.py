@@ -38,7 +38,7 @@ def snapshot(d):
     return {str(p.relative_to(d)): p.read_bytes() for p in d.rglob("*") if p.is_file() and ".git" not in p.parts}
 
 
-@pytest.mark.parametrize("kind", ["codex", "copilot", "claude", "cursor"])
+@pytest.mark.parametrize("kind", ["codex", "copilot", "claude"])
 def test_default_policy_is_full_auto(agent_lab, kind):
     """Default: the agent edits files without any approval dialog; the marker records full_auto."""
     require_kind(kind)

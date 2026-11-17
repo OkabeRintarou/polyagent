@@ -108,12 +108,10 @@ def check_extra_args(adapter: K.KindAdapter, extra_args: Iterable[str]) -> None:
 
 def check_env_names(adapter: K.KindAdapter, names: Iterable[str], policy: str) -> None:
     """Caller-provided variable names. read_only: no generic sensitive names and nothing from the
-    kind's configuration/permission families. Both policies: the kind's always-forbidden families."""
+    kind's configuration/permission families."""
+    if policy != READ_ONLY:
+        return
     for name in names:
-        if adapter.always_forbidden_env_prefixes and name.startswith(adapter.always_forbidden_env_prefixes):
-            raise InvalidConfigError(f"{name} is set by polyagent itself for {adapter.kind} and cannot be provided")
-        if policy != READ_ONLY:
-            continue
         if (
             name in K.GENERIC_FORBIDDEN_ENV_NAMES
             or name.startswith(K.GENERIC_FORBIDDEN_ENV_PREFIXES)
@@ -209,8 +207,6 @@ def build_args(spec: AgentSpec, cwd: str | os.PathLike[str], session_id: str | N
     if spec.auto_trust:
         if spec.kind == "codex":  # trusted for this run only, nothing written to config.toml (D9)
             args += ["-c", "projects={" + json.dumps(os.path.abspath(cwd)) + '={trust_level="trusted"}}']
-        elif adapter.trust_by_flag:
-            args += ["--trust"]
     if ro and spec.env:
         names = sorted(spec.env)
         if spec.kind == "codex":

@@ -249,30 +249,41 @@ def test_codex_rollout_from_open_file_descriptors(tmp_path):
 # ---- screen capture (7.4) --------------------------------------------------------------------
 
 
-CURSOR = K.adapter("cursor")
+CODEX = K.adapter("codex")
+CODEX_CAP = ScreenCapture(CODEX.footer, CODEX.footer_block)
+CODEX_STATUS = "  gpt default · /tmp/repo · ← for agents"
+CODEX_HEAD = "  >_ OpenAI Codex (v0.167.0)"
+CODEX_FOOT = "› Ask Codex to do anything\n\n" + CODEX_STATUS
+FIRST_TURN = "codex/first-turn-pong-then-markdown.txt"
+MD_PROMPT = ("Use your file tools to read alpha.txt and beta.txt in the current directory, then answer with a markdown "
+             "bullet list with one bullet per file, each giving the file name in bold and its number.")
+
+
+def _first_turn_split():
+    """The real two-turn codex screen, and the screen as it was before the second prompt was sent (its
+    content up to the second echo, then the sample's own footer block)."""
+    screen = (SCREENS / FIRST_TURN).read_text()
+    lines = screen.splitlines()
+    second = next(i for i, x in enumerate(lines) if x.startswith("› Use your file tools"))
+    foot = next(i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith("› Ask Codex"))
+    return screen, "\n".join(lines[:second] + lines[foot:]) + "\n"
 
 
 def test_reply_from_the_screen():
-    """Scenario: 退回屏幕截取 (cursor sample)."""
-    screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    before = screen.split("  Do these steps in order")[0]  # the screen before the second prompt was sent
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    baseline = cap.baseline(before)
-    assert baseline[-1].strip() == "The secret word is BANANA-42."
-    prompt = ("Do these steps in order and report each result in one short line: 1) run the shell command "
-              "`touch preset.txt` 2) create a new file w.txt containing hi 3) run `curl -s http://127.0.0.1:43831/probe` "
-              "4) search the web for 'polyagent probe'. Do not ask me questions.")
-    text = cap.extract(screen, baseline, [prompt], count=cap.count(before, baseline))
-    assert text.startswith("Ask mode blocks file changes")
-    assert text.rstrip().endswith("4. Web search for polyagent probe was rejected.")
-    assert "Add a follow-up" not in text and "shift+tab" not in text
+    """Scenario: 退回屏幕截取 (real codex screen): baseline before the second prompt, reply after its echo."""
+    screen, before = _first_turn_split()
+    baseline = CODEX_CAP.baseline(before)
+    assert baseline[-2:] == ["• PONG", "  Worked for 2s • 2:03 AM"]
+    text = CODEX_CAP.extract(screen, baseline, [MD_PROMPT], count=CODEX_CAP.count(before, baseline))
+    assert text.startswith("I’ll read both files")
+    assert "alpha.txt — 41" in text and text.rstrip().endswith("beta.txt — 17")
+    assert "Ask Codex" not in text and "for agents" not in text and "Worked for" not in text
 
 
 def test_first_prompt_on_a_fresh_screen():
-    screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    text = cap.extract(screen, [], ["Read the file data.txt and tell me the secret word it contains."], count=0)
-    assert text.startswith("I'll open data.txt") and "BANANA-42" in text
+    _, one_turn = _first_turn_split()
+    text = CODEX_CAP.extract(one_turn, [], ["Reply with exactly one word: PONG"], count=0)
+    assert text == "PONG"  # the timestamp line and the footer block are not part of it
 
 
 def test_multiline_prompt_continuation_and_prefixes_are_skipped():
@@ -285,15 +296,15 @@ def test_multiline_prompt_continuation_and_prefixes_are_skipped():
 
 def test_no_echo_after_the_baseline_gives_none():
     """Scenario: 无法分离回复 — the agent raises ReplyNotFoundError from this (see test_ask)."""
-    screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    assert cap.extract(screen, cap.baseline(screen), ["Read the file data.txt"], count=1) is None
-    assert cap.extract(screen, ["a line that is not on screen"], ["Read the file data.txt"], count=1) is None
+    screen, _ = _first_turn_split()
+    assert CODEX_CAP.extract(screen, CODEX_CAP.baseline(screen), [MD_PROMPT], count=1) is None
+    assert CODEX_CAP.extract(screen, ["a line that is not on screen"], [MD_PROMPT], count=1) is None
 
 
 def test_baseline_ignores_the_footer():
-    screen = (SCREENS / "cursor/websearch-rejected-after-esc.txt").read_text()
-    assert all("Add a follow-up" not in line for line in ScreenCapture(CURSOR.footer, CURSOR.footer_block).baseline(screen))
+    screen, _ = _first_turn_split()
+    base = CODEX_CAP.baseline(screen)
+    assert base and all("Ask Codex" not in line and "for agents" not in line for line in base)
 
 
 def test_codex_screen_footer():
@@ -348,11 +359,10 @@ def test_jsonl_resolve_and_truncation(tmp_path):
 def test_identical_questions_and_answers_on_screen():
     """Review C11: the baseline block also ends the new turn; the right occurrence is the last one
     that is followed by this prompt's echo."""
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    foot = "→ Add a follow-up\n  Auto Balance   Run Everything"
-    head = ["Cursor Agent", "~/repo"]
-    turn = ["> ping", "PONG"]
-    one, two, three = ("\n".join(head + turn * n + [foot]) for n in (1, 2, 3))
+    cap = CODEX_CAP
+    head = [CODEX_HEAD, "  /tmp/repo"]
+    turn = ["› ping", "• PONG"]
+    one, two, three = ("\n".join(head + turn * n + [CODEX_FOOT]) for n in (1, 2, 3))
 
     def after(before, now):
         base = cap.baseline(before)
@@ -360,10 +370,10 @@ def test_identical_questions_and_answers_on_screen():
 
     assert after(one, two) == "PONG"
     assert after(two, three) == "PONG"
-    bare = "\n".join(turn + [foot])
+    bare = "\n".join(turn + [CODEX_FOOT])
     base = cap.baseline(bare)
-    assert cap.extract("\n".join(turn * 2 + [foot]), base, ["ping"], count=cap.count(bare, base)) == "PONG"
-    assert cap.echo_seen("\n".join(turn * 2 + [foot]), base, ["ping"], count=cap.count(bare, base))
+    assert cap.extract("\n".join(turn * 2 + [CODEX_FOOT]), base, ["ping"], count=cap.count(bare, base)) == "PONG"
+    assert cap.echo_seen("\n".join(turn * 2 + [CODEX_FOOT]), base, ["ping"], count=cap.count(bare, base))
     assert not cap.echo_seen("\n".join(turn * 2), base, ["ping"], count=cap.count(bare, base))  # no input area
     assert not cap.echo_seen(bare, base, ["ping"], count=cap.count(bare, base))
 
@@ -371,14 +381,13 @@ def test_identical_questions_and_answers_on_screen():
 def test_identical_turns_before_an_undelivered_prompt_are_not_its_reply():
     """Review N1: three identical ping/PONG turns on screen, the fourth prompt never arrives: no echo, no
     reply. Delivered, the fourth turn's reply is found."""
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    foot = "→ Add a follow-up\n  Auto Balance   Run Everything"
-    turn = ["> ping", "PONG"]
-    three = "\n".join(["Cursor Agent"] + turn * 3 + [foot])
-    four = "\n".join(["Cursor Agent"] + turn * 3 + ["> ping", "PONG 4"] + [foot])
+    cap = CODEX_CAP
+    turn = ["› ping", "• PONG"]
+    three = "\n".join([CODEX_HEAD] + turn * 3 + [CODEX_FOOT])
+    four = "\n".join([CODEX_HEAD] + turn * 3 + ["› ping", "• PONG 4"] + [CODEX_FOOT])
     base = cap.baseline(three)
     n = cap.count(three, base)
-    assert n == 2  # the three-line block "PONG, > ping, PONG" occurs twice in three turns
+    assert n == 2  # the three-line block "• PONG, › ping, • PONG" occurs twice in three turns
     assert cap.extract(three, base, ["ping"], count=n) is None
     assert not cap.echo_seen(three, base, ["ping"], count=n)
     assert cap.extract(four, base, ["ping"], count=n) == "PONG 4"
@@ -388,37 +397,47 @@ def test_identical_turns_before_an_undelivered_prompt_are_not_its_reply():
 def test_a_scrolled_screen_never_points_before_the_pre_submit_position():
     """Review N1: earlier occurrences scrolled out of a later read: the n-th occurrence is then at or after
     the pre-submit position, so the result is "not found" or the right reply, never an old one."""
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    turn = ["> ping", "PONG"]
+    cap = CODEX_CAP
+    turn = ["› ping", "• PONG"]
     before = turn * 5
-    base = cap.baseline("\n".join(before))
-    n = cap.count("\n".join(before), base)
-    scrolled = "\n".join(before[4:])  # three old turns left in the window, prompt not delivered
+    base = cap.baseline("\n".join(before + [CODEX_FOOT]))
+    n = cap.count("\n".join(before + [CODEX_FOOT]), base)
+    assert n == 4
+    scrolled = "\n".join(before[4:] + [CODEX_FOOT])  # three old turns left in the window, prompt not delivered
     assert cap.extract(scrolled, base, ["ping"], count=n) is None
-    delivered = "\n".join(before[4:] + ["> ping", "PONG 6"])
+    delivered = "\n".join(before[4:] + ["› ping", "• PONG 6", CODEX_FOOT])
     assert cap.extract(delivered, base, ["ping"], count=n) in (None, "PONG 6")
 
 
 def test_one_word_reply_that_occurs_in_the_prompt_is_kept():
     """Review S5 (phase 4 spot check): continuation lines are matched in order, not as substrings."""
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    screen = "Cursor Agent\n> Reply with exactly one word: PONG\n\nPONG\n→ Add a follow-up\n  Auto Balance   Run Everything"
-    assert cap.extract(screen, ["Cursor Agent"], ["Reply with exactly one word: PONG"], count=1) == "PONG"
+    cap = CODEX_CAP
+    screen = f"{CODEX_HEAD}\n› Reply with exactly one word: PONG\n\n• PONG\n\n{CODEX_FOOT}\n"
+    assert cap.extract(screen, [CODEX_HEAD], ["Reply with exactly one word: PONG"], count=1) == "PONG"
     prompt = "Reply with exactly one word, nothing else, no punctuation at all; the word is PONG"
-    wrapped = ("Cursor Agent\n> Reply with exactly one word, nothing else, no punctuation at all;\n"
-               "the word is PONG\n\nPONG\n→ Add a follow-up\n  Auto Balance   Run Everything")
-    assert cap.extract(wrapped, ["Cursor Agent"], [prompt], count=1) == "PONG"
+    wrapped = (f"{CODEX_HEAD}\n› Reply with exactly one word, nothing else, no punctuation at all;\n"
+               f"  the word is PONG\n\n• PONG\n\n{CODEX_FOOT}\n")
+    assert cap.extract(wrapped, [CODEX_HEAD], [prompt], count=1) == "PONG"
+    # The reply line without a bullet (line markers, as an agent that prints no bullet would show it).
+    plain = ScreenCapture((re.compile(r"^\s*─{10,}"),))
+    screen = "old\n> Reply with exactly one word: PONG\n\nPONG\n" + "─" * 40 + "\n"
+    assert plain.extract(screen, ["old"], ["Reply with exactly one word: PONG"], count=1) == "PONG"
 
 
-def test_cursor_first_prompt_on_a_real_screen():
-    """Phase 5: before the first prompt cursor's input line is `→ Plan, search, build anything`; it is a
-    footer marker too, otherwise the baseline is taken from lines that disappear with the first prompt."""
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    before = (SCREENS / "cursor/first-prompt-before.txt").read_text()
-    after = (SCREENS / "cursor/first-prompt-pong-after.txt").read_text()
-    base = cap.baseline(before)
-    assert base and all("Plan, search" not in line for line in base)
-    assert cap.extract(after, base, ["Reply with exactly one word: PONG"], count=cap.count(before, base)) == "PONG"
+def test_first_prompt_on_a_real_screen():
+    """Phase 5: before the first prompt the input line holds only its placeholder; it is part of the
+    footer, otherwise the baseline is taken from lines that disappear with the first prompt (real codex
+    screen: its header, then the input area)."""
+    screen = (SCREENS / FIRST_TURN).read_text()
+    lines = screen.splitlines()
+    first = next(i for i, x in enumerate(lines) if x.startswith("› Reply with"))
+    foot = next(i for i in range(len(lines) - 1, -1, -1) if lines[i].startswith("› Ask Codex"))
+    before = "\n".join(lines[:first] + lines[foot:]) + "\n"
+    base = CODEX_CAP.baseline(before)
+    assert base and all("Ask Codex" not in line and "for agents" not in line for line in base)
+    count = CODEX_CAP.count(before, base)
+    _, one_turn = _first_turn_split()
+    assert CODEX_CAP.extract(one_turn, base, ["Reply with exactly one word: PONG"], count=count) == "PONG"
 
 
 def test_copilot_two_prompts_in_one_turn_are_ambiguous(tmp_path):
@@ -447,63 +466,58 @@ def test_claude_drops_format_characters_from_the_recorded_prompt(tmp_path):
     assert ClaudeLog(str(p)).judge(0, prompt_digest(sent)).text == "OK"
 
 
-def test_cursor_input_line_showing_the_previous_prompt_is_a_footer():
-    """Phase 5 (real cursor run): right after a turn the input line can read `→ <previous prompt>`; the
+def test_input_line_holding_text_is_a_footer():
+    """Phase 5 (first seen on another CLI): the input line can hold text, here the previous prompt; the
     baseline must not be taken from it, or the next reply is never found."""
-    cap = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-    before = ("  Cursor Agent\n  > Reply with exactly one word: PONG\n\n  PONG\n\n"
-              "  → Reply with exactly one word: PONG\n\n  Auto Balance   Run Everything\n  /tmp/pa-work\n")
-    after = ("  Cursor Agent\n  > Reply with exactly one word: PONG\n\n  PONG\n\n  > Read both files\n\n"
-             "  - **alpha.txt**: 41\n  - **beta.txt**: 17\n\n  → Add a follow-up\n\n  Auto Balance   Run Everything\n")
-    base = cap.baseline(before)
-    assert base and all("→" not in line for line in base)
-    assert cap.extract(after, base, ["Read both files"], count=cap.count(before, base)) == \
+    before = (f"{CODEX_HEAD}\n› Reply with exactly one word: PONG\n\n• PONG\n\n"
+              f"› Reply with exactly one word: PONG\n\n{CODEX_STATUS}\n")
+    after = (f"{CODEX_HEAD}\n› Reply with exactly one word: PONG\n\n• PONG\n\n› Read both files\n\n"
+             f"• - **alpha.txt**: 41\n  - **beta.txt**: 17\n\n{CODEX_FOOT}\n")
+    base = CODEX_CAP.baseline(before)
+    assert base and base[-1] == "• PONG"
+    assert CODEX_CAP.extract(after, base, ["Read both files"], count=CODEX_CAP.count(before, base)) == \
         "- **alpha.txt**: 41\n- **beta.txt**: 17"
 
 
 # ---- task 13.21: content area and footer (D12 "内容区和页脚") ------------------------------------------
 
-CURSOR_CAP = ScreenCapture(CURSOR.footer, CURSOR.footer_block)
-CODEX = K.adapter("codex")
-CODEX_CAP = ScreenCapture(CODEX.footer, CODEX.footer_block)
-STATUS = "  Auto Balance   Run Everything"
 
 
-@pytest.mark.parametrize("input_line", ["→ Plan, search, build anything", "→ Add a follow-up",
-                                        "→ Reply with exactly one word: PONG"])
-def test_cursor_three_input_line_forms(input_line):
-    before = f"Cursor Agent\n  old answer\n\n  {input_line}\n\n{STATUS}\n  /tmp/pa-work\n"
-    assert CURSOR_CAP.recognized(before) and CURSOR_CAP.baseline(before) == ["Cursor Agent", "  old answer"]
-    after = before.replace(f"  {input_line}", f"  What is it?\n\n  It is 42.\n\n  {input_line}")
-    base = CURSOR_CAP.baseline(before)
-    assert CURSOR_CAP.extract(after, base, ["What is it?"], count=CURSOR_CAP.count(before, base)) == "It is 42."
+@pytest.mark.parametrize("input_line", ["› Ask Codex to do anything", "›", "› a draft the user is typing"])
+def test_codex_three_input_line_forms(input_line):
+    """The input line with its placeholder, empty, or holding typed text: all end the content area."""
+    before = f"{CODEX_HEAD}\n  old answer\n\n{input_line}\n\n{CODEX_STATUS}\n"
+    assert CODEX_CAP.recognized(before) and CODEX_CAP.baseline(before) == [CODEX_HEAD, "  old answer"]
+    after = before.replace(f"\n{input_line}\n", f"\n› What is it?\n\n• It is 42.\n\n{input_line}\n")
+    base = CODEX_CAP.baseline(before)
+    assert CODEX_CAP.extract(after, base, ["What is it?"], count=CODEX_CAP.count(before, base)) == "It is 42."
 
 
-def test_cursor_reply_lines_starting_with_the_input_prefix_are_kept():
+def test_reply_lines_starting_with_the_input_prefix_are_kept():
     """Scenario: 回复正文里有与输入行相同开头的行 (the known defect before 13.21)."""
-    before = f"Cursor Agent\n  → Add a follow-up\n{STATUS}\n"
-    after = (f"Cursor Agent\n  List the steps\n  Steps:\n  → first step\n  → second step\n  done.\n"
-             f"  → Add a follow-up\n{STATUS}\n")
-    base = CURSOR_CAP.baseline(before)
-    text = CURSOR_CAP.extract(after, base, ["List the steps"], count=CURSOR_CAP.count(before, base))
-    assert text == "Steps:\n→ first step\n→ second step\ndone."
+    before = f"{CODEX_HEAD}\n{CODEX_FOOT}\n"
+    after = (f"{CODEX_HEAD}\n› List the steps\n• Steps:\n› first step\n› second step\n  done.\n"
+             f"{CODEX_FOOT}\n")
+    base = CODEX_CAP.baseline(before)
+    text = CODEX_CAP.extract(after, base, ["List the steps"], count=CODEX_CAP.count(before, base))
+    assert text == "Steps:\n› first step\n› second step\ndone."
 
 
-def test_cursor_arrow_line_right_above_the_footer_block_stays_in_the_reply():
-    screen = f"Cursor Agent\n  ask\n  → the last line of the reply\n  → Add a follow-up\n{STATUS}\n  /tmp/x\n"
-    assert CURSOR_CAP.extract(screen, [], ["ask"], count=0) == "→ the last line of the reply"
+def test_prefixed_line_right_above_the_footer_block_stays_in_the_reply():
+    screen = f"{CODEX_HEAD}\n› ask\n› the last line of the reply\n{CODEX_FOOT}\n"
+    assert CODEX_CAP.extract(screen, [], ["ask"], count=0) == "› the last line of the reply"
 
 
 @pytest.mark.parametrize("tail", [
-    "  → Add a follow-up\n  Auto Balance\n  /tmp/x\n",  # an arrow line near the end, no status marker
-    "  → Add a follow-up\n  a\n  b\n  c\n  d\n" + STATUS + "\n",  # five non-blank lines after it
-    "  no input line at all\n" + STATUS + "\n",
+    "› Ask Codex to do anything\n\n  gpt default\n",  # an input line, no status line after it
+    f"› Ask Codex to do anything\n\n{CODEX_STATUS}\n  a\n  b\n  c\n",  # four non-blank lines after it
+    f"  no input line at all\n\n{CODEX_STATUS}\n",
 ])
-def test_cursor_screen_without_a_recognized_footer_block(tail):
-    screen = "Cursor Agent\n  ask\n  It is 42.\n" + tail
-    assert not CURSOR_CAP.recognized(screen)
-    assert CURSOR_CAP.extract(screen, [], ["ask"], count=0) is None
-    assert not CURSOR_CAP.echo_seen(screen, [], ["ask"], count=0)
+def test_screen_without_a_recognized_footer_block(tail):
+    screen = f"{CODEX_HEAD}\n› ask\n• It is 42.\n\n" + tail
+    assert not CODEX_CAP.recognized(screen)
+    assert CODEX_CAP.extract(screen, [], ["ask"], count=0) is None
+    assert not CODEX_CAP.echo_seen(screen, [], ["ask"], count=0)
 
 
 def test_codex_echo_in_the_transcript_carries_the_input_prefix():
@@ -521,17 +535,12 @@ def test_codex_prompt_left_in_the_input_box_is_not_an_echo():
     count = CODEX_CAP.count(before, base)
     assert not CODEX_CAP.echo_seen(stuck, base, ["What is the answer?"], count=count)
     assert CODEX_CAP.extract(stuck, base, ["What is the answer?"], count=count) is None
+    fresh = "  >_ OpenAI Codex (v0.167.0)\n\n› What is the answer?\n\n  gpt default · /tmp/repo\n"  # first prompt
+    assert not CODEX_CAP.echo_seen(fresh, [], ["What is the answer?"], count=0)
+    assert CODEX_CAP.extract(fresh, [], ["What is the answer?"], count=0) is None
 
 
-def test_cursor_prompt_left_in_the_input_box_is_not_an_echo():
-    before = f"Cursor Agent\n  old\n  → Add a follow-up\n{STATUS}\n"
-    stuck = f"Cursor Agent\n  old\n  → What is the answer?\n{STATUS}\n"
-    base = CURSOR_CAP.baseline(before)
-    assert CURSOR_CAP.extract(stuck, base, ["What is the answer?"], count=CURSOR_CAP.count(before, base)) is None
-
-
-@pytest.mark.parametrize("rel", ["cursor/first-prompt-before.txt", "cursor/first-prompt-pong-after.txt",
-                                 "cursor/websearch-rejected-after-esc.txt", "codex/status-after-raw-slash-status.txt"])
+@pytest.mark.parametrize("rel", ["codex/status-after-raw-slash-status.txt", "codex/first-turn-pong-then-markdown.txt"])
 def test_samples_show_a_recognized_input_area(rel):
     kind = rel.split("/")[0]
     a = K.adapter(kind)
@@ -623,15 +632,14 @@ def test_claude_and_copilot_take_no_reply_from_the_screen(kind, rel, echo):
 
 # ---- task 13.31: codex's bottom footer block (D12, four conditions) --------------------------------
 
-CODEX_STATUS = "  gpt default · /tmp/repo · ← for agents"
 YES_NO = "  Allow this command?\n\n{first}1. Yes, proceed\n{last}2. No, tell Codex what to do\n\n  Press enter to confirm or esc to cancel\n"
 
 
 @pytest.mark.parametrize("screen", [
     (SCREENS / "codex/trust-dialog.txt").read_text(),
     (SCREENS / "codex/model-picker-dialog.txt").read_text(),  # real, phase 8 (`/model`)
-    YES_NO.format(first="› ", last="  "),  # cursor on the first item
-    YES_NO.format(first="  ", last="› "),  # cursor on the last item
+    YES_NO.format(first="› ", last="  "),  # selection on the first item
+    YES_NO.format(first="  ", last="› "),  # selection on the last item
     "  answer\n\n› Ask Codex to do anything\n\n" + CODEX_STATUS + "\n  one more line\n",  # two lines after it
     "  answer\n\n› Ask Codex to do anything\n\n  gpt default   /tmp/repo\n",  # status without ` · `
     "  Pick one\n› 1. first · option\n  2. second\n",  # input line is a numbered option
@@ -641,11 +649,6 @@ def test_codex_screens_that_are_not_its_input_area(screen):
     """Scenario: 对话框不是输入区 — the dialog samples and footer shapes D12 does not accept."""
     assert not CODEX_CAP.recognized(screen)
     assert CODEX_CAP.extract(screen, [], ["Ask Codex to do anything"], count=0) is None
-
-
-@pytest.mark.parametrize("rel", ["cursor/trust-dialog.txt", "cursor/websearch-approval-dialog.txt"])
-def test_cursor_dialog_samples_are_not_its_input_area(rel):
-    assert not CURSOR_CAP.recognized((SCREENS / rel).read_text())
 
 
 @pytest.mark.parametrize("rel", ["codex/status-after-raw-slash-status.txt", "codex/phase2-echo-prefix-reconnecting.txt",
@@ -718,3 +721,59 @@ def test_real_codex_status_lines_after_a_first_turn(case):
     assert CODEX_CAP.recognized(screen)
     echo = next(line[2:] for line in screen.splitlines() if line.startswith("› ") and "Ask Codex" not in line)
     assert CODEX_CAP.extract(screen, [], [echo], count=0)
+
+
+# ---- task 13.42: CodexLog.first_prompt (D12 "提交后再绑定", phase 10 D-3) ------------------------------------
+
+CODEX_FIRST = "codex/long-prompts.rollout.jsonl"
+
+
+def _first_turn_lines():
+    out = []
+    for line in lines(CODEX_FIRST):
+        out.append(line)
+        if '"task_complete"' in line:
+            return out
+    raise AssertionError("no first turn")
+
+
+def _user(text):
+    return json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                             "content": [{"type": "input_text", "text": text}]}}) + "\n"
+
+
+def _first_prompt(tmp_path, entries, prompt="Reply with exactly one word: PONG"):
+    p = tmp_path / "rollout-x.jsonl"
+    p.write_text("".join(entries))
+    return CodexLog(str(p)).first_prompt(prompt_digest(prompt))
+
+
+def test_codex_first_prompt_rules(tmp_path):
+    first = _first_turn_lines()
+    i = next(k for k, ln in enumerate(first) if "Reply with exactly one word: PONG" in ln and '"user"' in ln)
+    assert _first_prompt(tmp_path, first) is True  # the real first turn: environment context first
+    assert _first_prompt(tmp_path, first[:i]) is None  # not there yet, nothing rules the file out
+    for own in ("<user_instructions>x</user_instructions>", "<user_shell_command>ls</user_shell_command>", "plain"):
+        assert _first_prompt(tmp_path, first[:i] + [_user(own)] + first[i:]) is True
+        assert _first_prompt(tmp_path, first[:i] + [_user(own)]) is None
+    task_started = next(ln for ln in first if '"task_started"' in ln)
+    assert _first_prompt(tmp_path, first[:i] + [task_started] + first[i:]) is False
+    assert _first_prompt(tmp_path, first[:i] + [task_started]) is False  # decided before the prompt shows
+    assert _first_prompt(tmp_path, first[:i + 1] + [first[i]] + first[i + 1:]) is False  # matched twice
+    whole = lines(CODEX_FIRST)
+    second = "Use your file tools to read alpha.txt and beta.txt"
+    k = next(k for k, ln in enumerate(whole) if second in ln and '"user"' in ln)
+    text = json.loads(whole[k])["payload"]["content"][0]["text"]
+    assert _first_prompt(tmp_path, whole, text) is False  # an earlier turn ended and was answered
+
+
+def test_codex_real_first_turn_in_a_directory_with_project_instructions(tmp_path):
+    """Task 13.42 sample (real codex 0.167, `AGENTS.md` in the working directory): the user message codex
+    writes before the prompt starts with the project instructions, not `<environment_context>` (the rule
+    before phase 10 refused such a file); one turn start, no assistant message before the prompt."""
+    rel = "codex/agents-md-first-turn.rollout.jsonl"
+    log = CodexLog(str(copy(tmp_path, rel)))
+    users = [t for e in log.log.entries() if (t := log._user_text(e)) is not None]
+    assert len(users) == 2 and users[0].startswith("# AGENTS.md instructions") and "<environment_context>" in users[0]
+    assert log.first_prompt(prompt_digest("Reply with exactly one word: PONG")) is True
+    assert log.judge(0, prompt_digest("Reply with exactly one word: PONG")).text == "PONG"

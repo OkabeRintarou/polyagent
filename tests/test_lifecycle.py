@@ -69,10 +69,10 @@ def test_full_auto_without_variables_needs_no_preparation(pa, client, tmp_path, 
         assert args[args.index("--session-id") + 1] == m.session_id
 
 
-def test_cursor_always_prepares_and_stops_self_update(pa, client, tmp_path):
-    pa.start(AgentSpec(kind="cursor"), tmp_path)
+def test_full_auto_with_variables_prepares_before_starting(pa, client, tmp_path):
+    pa.start(AgentSpec(kind="codex", env={"X": "1"}), tmp_path)
     script, = client.prep_scripts
-    assert "export AGENT_CLI_UPDATE_CHECK_URL=" in script
+    assert "\\command export X=1" in script.splitlines()
     assert client.names().index("pane_run") < client.names().index("agent_start")
 
 
@@ -105,7 +105,7 @@ def test_read_only_claude_clears_provider_families_then_exports(pa, client, tmp_
 
 
 def test_prep_script_runs_in_the_bash_family_shell_with_sentinels(pa, client, tmp_path):
-    pa.start(AgentSpec(kind="cursor"), tmp_path)
+    pa.start(AgentSpec(kind="codex", env={"X": "1"}), tmp_path)
     (_, command), = client.args_of("pane_run")
     assert command.startswith("{ \\command trap - DEBUG RETURN ERR; } 2>/dev/null; . ") and "__pa_env_ok_$((1+1))" in command and "__pa_env_fail_$((1+1))" in command
     assert "__pa_env_ok_2" not in command
@@ -124,7 +124,7 @@ def test_prep_file_is_private(pa, client, tmp_path, monkeypatch):
         orig(pane, command)
 
     client.pane_run = pane_run
-    pa.start(AgentSpec(kind="cursor", env={"X": "1"}), tmp_path)
+    pa.start(AgentSpec(kind="codex", env={"X": "1"}), tmp_path)
     assert seen == [0o600]
 
 
@@ -133,7 +133,7 @@ def test_non_posix_shell_is_refused(pa, client, tmp_path, shell):
     """zsh and ksh failed task 13.17 (exports, tracing): refused like non-POSIX shells."""
     client.shell = shell
     with pytest.raises(HerdrError) as ei:
-        pa.start(AgentSpec(kind="cursor"), tmp_path)
+        pa.start(AgentSpec(kind="codex", env={"X": "1"}), tmp_path)
     assert ei.value.code == "unsupported_shell"
     assert client.workspaces == {}
 
@@ -141,7 +141,7 @@ def test_non_posix_shell_is_refused(pa, client, tmp_path, shell):
 @pytest.mark.parametrize("shell", ["bash", "-bash", "sh", "dash"])
 def test_posix_shells_are_accepted(pa, client, tmp_path, shell):
     client.shell = shell
-    pa.start(AgentSpec(kind="cursor"), tmp_path)
+    pa.start(AgentSpec(kind="codex", env={"X": "1"}), tmp_path)
 
 
 @pytest.fixture
@@ -255,8 +255,18 @@ def test_same_name_orphan_is_reclaimed_under_the_lock(pa, client, tmp_path):
     assert "w9" not in client.workspaces
 
 
+@pytest.mark.parametrize("policy", [None, "read_only"])
+@pytest.mark.parametrize("kind", ["cursor", "cursor-agent"])
+def test_cursor_start_fails_before_any_herdr_call(pa, client, tmp_path, kind, policy):
+    """Scenarios: 以 cursor 启动 / 以 cursor-agent 启动 / 错误类型."""
+    with pytest.raises(InvalidConfigError) as ei:
+        pa.start(AgentSpec(kind=kind, policy=policy), tmp_path)
+    assert not isinstance(ei.value, PolicyNotSupportedError) and "cursor is not supported" in str(ei.value)
+    assert client.calls == [] and client.workspaces == {}
+
+
 def test_static_checks_happen_before_any_herdr_call(pa, client, tmp_path):
-    for bad in (dict(spec=AgentSpec(kind="cursor", policy="read_only"), cwd=tmp_path),
+    for bad in (dict(spec=AgentSpec(kind="codex", policy="read_only"), cwd=tmp_path),
                 dict(spec=AgentSpec(kind="codex"), cwd=tmp_path / "missing"),
                 dict(spec=AgentSpec(kind="codex"), cwd=tmp_path, name="Bad Name"),
                 dict(spec=AgentSpec(kind="codex"), cwd=tmp_path, start_timeout=3),
@@ -402,17 +412,11 @@ def test_unknown_dialog_even_with_the_word_trust(pa, client, tmp_path):
 
 
 def test_dialog_still_on_screen_although_reported_ready(pa, client, tmp_path):
-    """Scenario: 已报告就绪时仍有对话框 (cursor, auto_trust off)."""
-    client.screens = [screen("cursor/trust-dialog.txt")]
+    """Scenario: 已报告就绪时仍有对话框 (claude's trust dialog, auto_trust off)."""
+    client.screens = [screen("claude/trust-dialog.txt")]
     with pytest.raises(AgentBlockedError):
-        pa.start(AgentSpec(kind="cursor", auto_trust=False), tmp_path)
+        pa.start(AgentSpec(kind="claude", auto_trust=False), tmp_path)
     assert not client.args_of("agent_send_keys") and client.workspaces == {}
-    assert "--trust" not in client.args_of("agent_start")[0][4]
-
-
-def test_cursor_auto_trust_uses_the_flag(pa, client, tmp_path):
-    pa.start(AgentSpec(kind="cursor"), tmp_path)
-    assert "--trust" in client.args_of("agent_start")[0][4]
 
 
 def test_codex_trust_dialog_is_never_answered(pa, client, tmp_path):
@@ -548,7 +552,7 @@ def test_attach_rebuilds_from_the_marker(pa, client, tmp_path):
 def test_attached_handle_keeps_the_read_only_refusal(pa, client, tmp_path, monkeypatch):
     """Scenario: 接管后策略仍生效."""
     monkeypatch.setattr(A, "POLL_INTERVAL", 0.005)
-    pa.start(AgentSpec(kind="cursor"), tmp_path, name="w")  # some other agent
+    pa.start(AgentSpec(kind="codex"), tmp_path, name="w")  # some other agent
     client.workspaces["w7"] = {"workspace_id": "w7",
                                "label": Marker("reviewer", "claude", "read_only", 5, session_id="sid").encode()}
     client.add_agent("reviewer", "w7")
@@ -562,7 +566,8 @@ def test_attached_handle_keeps_the_read_only_refusal(pa, client, tmp_path, monke
     assert [k for _, *k in client.args_of("agent_send_keys")] == [["esc"]]
 
 
-@pytest.mark.parametrize("label", ["manual workspace", Marker("other", "codex", "full_auto", 5).encode()])
+@pytest.mark.parametrize("label", ["manual workspace", Marker("other", "codex", "full_auto", 5).encode(),
+                                   "polyagent:1:reviewer:cursor:fa:-:-:5"])  # task 13.41: not a v1 kind
 def test_attach_refuses_foreign_agents(pa, client, label):
     client.workspaces["w5"] = {"workspace_id": "w5", "label": label}
     client.add_agent("reviewer", "w5")
@@ -578,6 +583,8 @@ def test_list_only_returns_polyagent_agents(pa, client, tmp_path):
     client.workspaces["w8"] = {"workspace_id": "w8", "label": "manual"}
     client.add_agent("manual", "w8")
     client.workspaces["w9"] = {"workspace_id": "w9", "label": Marker("ghost", "codex", "full_auto", 5).encode()}
+    client.workspaces["w10"] = {"workspace_id": "w10", "label": "polyagent:1:old:cursor:fa:-:-:5"}  # task 13.41
+    client.add_agent("old", "w10")
     assert [x.name for x in pa.list()] == ["mine"]
     assert pa.list()[0].workspace_id == a.workspace_id
 
@@ -717,7 +724,7 @@ def test_claude_panes_are_created_with_self_update_off(pa, client, tmp_path, pol
         assert client.prep_scripts == [] and not client.args_of("pane_process_info")  # no prep, no shell check
 
 
-@pytest.mark.parametrize("kind", ["codex", "copilot", "cursor"])
+@pytest.mark.parametrize("kind", ["codex", "copilot"])
 def test_other_kinds_get_no_self_update_variable_from_the_pane(pa, client, tmp_path, kind):
     pa.start(AgentSpec(kind=kind), tmp_path)
     assert "DISABLE_AUTOUPDATER" not in client.workspace_env[0]

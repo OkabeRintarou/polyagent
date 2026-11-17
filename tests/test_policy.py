@@ -42,7 +42,7 @@ def test_default_policy_generates_full_auto_args(kind, repo):
     assert spec.policy == "full_auto"
     argv = P.build_args(spec, repo, session_id=SID)
     full = {"codex": "--dangerously-bypass-approvals-and-sandbox", "copilot": "--yolo",
-            "claude": "--dangerously-skip-permissions", "cursor": "--yolo"}[kind]
+            "claude": "--dangerously-skip-permissions"}[kind]
     assert full in argv
 
 
@@ -73,12 +73,17 @@ def test_library_adds_no_shell_allow_rule(kind, repo):
         assert not any(a.startswith("Bash") for a in allowed)
 
 
-def test_cursor_read_only_is_unsupported(repo):
-    """Scenarios: 不支持只读的 kind / 只能靠对话框拒绝的 kind (cursor's web search)."""
+def test_unsupported_read_only_is_refused_with_its_reason(repo, monkeypatch):
+    """Scenarios: 不支持只读的 kind / 只能靠对话框拒绝的 kind. No v1 kind has read_only marked unsupported,
+    so the state is put on an adapter here."""
+    a = K.adapter("codex")
+    note = "web search can only be refused by a running dialog"
+    caps = dict(a.capabilities, **{K.READ_ONLY: K.Capability(K.UNSUPPORTED, note=note)})
+    monkeypatch.setitem(K.ADAPTERS, "codex", dataclasses.replace(a, capabilities=caps))
     with pytest.raises(PolicyNotSupportedError) as ei:
-        P.check_static(ro("cursor"), repo)
+        P.check_static(ro("codex"), repo)
     assert "not supported" in str(ei.value) and "not yet verified" not in str(ei.value)
-    assert "web search" in str(ei.value)
+    assert note in str(ei.value)
 
 
 def test_codex_read_only_is_unverified_with_task(repo):
@@ -109,7 +114,7 @@ def test_unverified_mcp_allow_list(repo):
     assert "not yet verified" in str(ei.value) and "13.3" in str(ei.value)
 
 
-@pytest.mark.parametrize("kind", ["codex", "cursor"])
+@pytest.mark.parametrize("kind", ["codex"])
 def test_unsupported_mcp_allow_list(kind, repo, monkeypatch):
     a = K.adapter(kind)
     caps = dict(a.capabilities, **{K.READ_ONLY: K.Capability(K.VERIFIED)})  # isolate the MCP check
@@ -173,9 +178,6 @@ def test_trust_arguments(repo):
     codex = P.build_args(P.check_static(AgentSpec(kind="codex"), repo), repo)
     i = codex.index("-c")
     assert codex[i + 1] == 'projects={"%s"={trust_level="trusted"}}' % repo
-    assert "--trust" in P.build_args(P.check_static(AgentSpec(kind="cursor"), repo), repo)
-    no = P.build_args(P.check_static(AgentSpec(kind="cursor", auto_trust=False), repo), repo)
-    assert "--trust" not in no
 
 
 def test_read_only_hides_injected_variable_names(repo):
@@ -250,13 +252,6 @@ def test_config_dir_redirect_is_refused_before_capability_for_codex(repo):
                                        ("copilot", "XDG_CONFIG_HOME")])
 def test_env_names_unrestricted_under_full_auto(kind, name, repo):
     assert P.check_static(AgentSpec(kind=kind, env={name: "x"}), repo).policy == "full_auto"
-
-
-@pytest.mark.parametrize("policy", [None, "full_auto", "read_only"])
-def test_cursor_agent_cli_variables_refused_in_both_policies(policy, repo):
-    with pytest.raises(InvalidConfigError) as ei:
-        P.check_static(AgentSpec(kind="cursor", policy=policy, env={"AGENT_CLI_UPDATE_CHECK_URL": "http://127.0.0.1:1/"}), repo)
-    assert "polyagent itself" in str(ei.value)
 
 
 def test_provider_variables_are_not_checked_as_caller_env(repo):
@@ -368,7 +363,7 @@ def test_provider_cannot_smuggle_forbidden_variables(repo):
         ClaudeProvider("bedrock", {})
 
 
-@pytest.mark.parametrize("kind", ["codex", "cursor"])
+@pytest.mark.parametrize("kind", ["codex"])
 def test_build_args_refuses_unverified_read_only(kind, repo):
     """Review C6: read_only arguments are never built for a kind whose read_only is not verified."""
     with pytest.raises(PolicyNotSupportedError):
@@ -380,11 +375,8 @@ def test_build_args_refuses_unverified_mcp_allow_list(repo):
         P.build_args(AgentSpec(kind="copilot", policy="read_only", mcp_allow=["docs"]), repo)
 
 
-def test_cursor_prefix_refusals_name_the_right_task():
-    """Review C8: `/` is verified unguardable; `#@$?` are unverified under cursor's task 13.7."""
-    rejected = K.adapter("cursor").prompt_guard.rejected
-    assert rejected["/"] is None
-    assert {rejected[c] for c in "#@$?"} == {"13.7"}
+def test_prefix_refusals_name_the_right_task():
+    """Review C8: unverified prefixes name the task that could lift the refusal."""
     assert dict(K.adapter("codex").prompt_guard.rejected) == dict.fromkeys("#$?", "13.8")
 
 
@@ -404,8 +396,7 @@ def test_overriding_a_library_option():
     [("claude", "--model=x"), ("claude", "--disallowed-tools"), ("claude", "-r"), ("claude", "-rabc"),
      ("claude", "--fork-session"), ("claude", "-p"), ("claude", "--sess"), ("claude", "--dangerously"),
      ("copilot", "--excluded-tools=bash"), ("copilot", "--available-tools"), ("copilot", "-ihello"), ("copilot", "--no-ask"),
-     ("copilot", "--resume"), ("codex", "-mgpt-5"), ("codex", "--no-daemon"), ("codex", "--dangerously-bypass"),
-     ("cursor", "-f"), ("cursor", "--force"), ("cursor", "--continue"), ("cursor", "--trus")],
+     ("copilot", "--resume"), ("codex", "-mgpt-5"), ("codex", "--no-daemon"), ("codex", "--dangerously-bypass")],
 )
 def test_reserved_option_matching_rules(kind, arg, repo):
     """D8: exact name, `=` form, attached short value, and abbreviations of reserved long options."""
@@ -427,8 +418,7 @@ def test_argument_terminator(kind, policy, repo):
 
 @pytest.mark.parametrize(
     "kind,extra",
-    [("claude", ["--verbose"]), ("copilot", ["--no-color"]), ("codex", ["-c", "model_reasoning_effort=high"]),
-     ("cursor", ["--output-format", "text"]), ("claude", ["--effort", "high"])],
+    [("claude", ["--verbose"]), ("copilot", ["--no-color"]), ("codex", ["-c", "model_reasoning_effort=high"]), ("claude", ["--effort", "high"])],
 )
 def test_ordinary_extra_arguments_pass_unchanged(kind, extra, repo):
     """Scenario: 普通附加参数."""
@@ -482,7 +472,7 @@ def test_symlink_followed_by_dotdot_checks_the_real_directory(repo, tmp_path_fac
 @pytest.mark.parametrize(
     "kind,arg",
     [("copilot", "-sr"), ("copilot", "-sp"), ("copilot", "-si"), ("copilot", "-sir"), ("claude", "-vp"),
-     ("cursor", "-xf"), ("codex", "-xm=gpt"), ("codex", "-xC")],
+     ("codex", "-xm=gpt"), ("codex", "-xC")],
 )
 def test_clustered_short_options_hiding_a_reserved_one(kind, arg, repo):
     """Review N2: `-sr` is `-s -r` for clap-style parsers."""

@@ -14,7 +14,7 @@ import urllib.parse
 from dataclasses import InitVar, dataclass, field
 from typing import Any, Iterator, Mapping
 
-from ._rules import KINDS
+from ._rules import CURSOR_UNSUPPORTED, KINDS, UNSUPPORTED_KINDS
 from .errors import InvalidConfigError
 
 __all__ = ["AgentSpec", "ClaudeProvider", "ToolPolicy", "ENV_NAME_RE", "MODEL_RE", "MCP_NAME_RE"]
@@ -23,7 +23,6 @@ ENV_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 MODEL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@\[\]=,+-]*")  # first character alphanumeric (D8)
 MCP_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 MCP_TOOL_SEP = "/"  # `server` or `server/tool`; `/` is outside the MCP name character set
-KIND_ALIASES = {"cursor-agent": "cursor"}
 # Values travel as one shell input line (herdr types the start command, D8) or through an
 # exported script (D6); control characters cannot be guaranteed to arrive verbatim.
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -402,10 +401,10 @@ class AgentSpec:
     auto_trust: bool = True
 
     def __post_init__(self) -> None:
-        kind = KIND_ALIASES.get(self.kind, self.kind) if isinstance(self.kind, str) else self.kind
-        if kind not in KINDS:
+        if self.kind in UNSUPPORTED_KINDS:
+            raise InvalidConfigError(CURSOR_UNSUPPORTED)
+        if self.kind not in KINDS:
             raise InvalidConfigError(f"unsupported agent kind {self.kind!r}: use one of {', '.join(KINDS)}")
-        object.__setattr__(self, "kind", kind)
         if self.model is not None:
             _model(self.model)
         if isinstance(self.extra_args, str):
@@ -422,7 +421,7 @@ class AgentSpec:
         if self.provider is not None:
             if not isinstance(self.provider, ClaudeProvider):
                 raise InvalidConfigError("provider must be a ClaudeProvider")
-            if kind != "claude":
+            if self.kind != "claude":
                 raise InvalidConfigError("a provider can only be given for claude")
             clash = sorted(n for n in env if is_provider_env(n))
             if clash:
@@ -434,7 +433,7 @@ class AgentSpec:
             raise InvalidConfigError("mcp_allow must be a sequence of entries, not a string")
         object.__setattr__(self, "mcp_allow", tuple(dict.fromkeys(_mcp_entry(e) for e in self.mcp_allow)))
         if self.mcp_config is not None:
-            if kind != "claude":
+            if self.kind != "claude":
                 raise InvalidConfigError("mcp_config is only used by read_only claude")
             path = os.path.abspath(_plain(os.fspath(self.mcp_config), "mcp_config"))
             object.__setattr__(self, "mcp_config", path)

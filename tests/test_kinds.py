@@ -1,5 +1,6 @@
 """Task 4.3: kind adapter table (design D7, D8, D9)."""
 
+import dataclasses
 from pathlib import Path
 
 import pytest
@@ -23,7 +24,6 @@ EVIDENCE = {
     ("claude", "read_only"): ["logs/claude/stub-readonly-denied-tools-prefixes.jsonl",
                               "logs/claude/real-readonly-restricted-env.jsonl", "logs/claude/real-mcp-config-allowlist.jsonl"],
     ("claude", "full_auto"): ["logs/claude/stub-fullauto.jsonl", "logs/claude/real-fullauto-write-askuser-bash.jsonl"],
-    ("cursor", "full_auto"): ["logs/cursor/transcript-pong-interrupted.jsonl", "screens/cursor/trust-dialog.txt"],
 }
 SID = "11111111-2222-3333-4444-555555555555"
 
@@ -52,7 +52,6 @@ def test_read_only_states():
     assert K.adapter("claude").capability(K.READ_ONLY).state == K.VERIFIED
     assert K.adapter("copilot").capability(K.READ_ONLY).state == K.VERIFIED  # task 13.1 done
     assert K.adapter("codex").capability(K.READ_ONLY) == K.Capability(K.UNVERIFIED, "13.4", K.adapter("codex").capability(K.READ_ONLY).note)
-    assert K.adapter("cursor").capability(K.READ_ONLY).state == K.UNSUPPORTED
 
 
 def test_codex_args():
@@ -128,20 +127,19 @@ def test_ask_form_disabled_in_both_policies(policy):
 
 def test_model_flag():
     assert args("codex", "full_auto", model="gpt-5")[-2:] == ["--model", "gpt-5"]
-    with pytest.raises(ValueError):
-        args("cursor", "read_only")
+    with pytest.raises(ValueError):  # a kind without read_only arguments
+        dataclasses.replace(K.adapter("codex"), read_only_args=()).native_args("read_only")
 
 
-def test_cursor_prestart_and_trust():
-    a = K.adapter("cursor")
-    assert a.trust_by_flag and a.executable == "cursor-agent"
-    assert a.prestart_env["AGENT_CLI_UPDATE_CHECK_URL"].startswith("http://127.0.0.1:")
-    assert a.prompt_guard.multiline is False and "/" in a.prompt_guard.rejected
+def test_kinds_and_adapter_table_are_exactly_the_three_v1_kinds():
+    """Task 13.41: cursor is not supported in v1; neither its name nor its alias is a kind."""
+    assert set(K.KINDS) == set(K.ADAPTERS) == {"codex", "copilot", "claude"}
+    assert len(K.KINDS) == 3
 
 
 def test_status_trust_and_keys():
     assert K.adapter("copilot").status_trusted is False
-    assert all(K.adapter(k).status_trusted for k in ("codex", "claude", "cursor"))
+    assert all(K.adapter(k).status_trusted for k in ("codex", "claude"))
     assert {K.adapter(k).interrupt_key for k in K.KINDS} == {"esc"}
 
 
@@ -153,7 +151,6 @@ def test_status_trust_and_keys():
         ("claude", "trust", "claude/trust-dialog.txt"),
         ("claude", "api_key", "claude/api-key-confirmation-dialog.txt"),
         ("claude", "bypass_permissions", "claude/bypass-permissions-dialog.txt"),
-        ("cursor", "trust", "cursor/trust-dialog.txt"),
     ],
 )
 def test_dialog_signatures_match_only_their_screen(kind, dialog, fixture):
@@ -176,7 +173,6 @@ def test_dialog_answers_and_persistence():
 def test_config_env_families():
     assert K.is_config_env("COPILOT_ALLOW_ALL") and K.is_config_env("CODEX_HOME")
     assert K.is_config_env("CLAUDE_CONFIG_DIR") and K.is_config_env("CLAUDE_CODE_USE_BEDROCK")
-    assert K.is_config_env("CURSOR_API_KEY") and K.is_config_env("AGENT_CLI_UPDATE_CHECK_URL")
     assert not K.is_config_env("GH_TOKEN") and not K.is_config_env("ANTHROPIC_MODEL")
 
 
@@ -192,8 +188,6 @@ def test_reserved_options_cover_every_generated_full_auto_option(kind):
     """Derived from the table's own arguments, not from a second list."""
     a = K.adapter(kind)
     generated = _options(a.native_args("full_auto", model="m", session_id=SID))
-    if a.trust_by_flag:
-        generated.add("--trust")
     assert generated <= set(a.reserved_options), generated - set(a.reserved_options)
 
 
@@ -201,7 +195,6 @@ def test_reserved_session_identity_and_run_mode_options():
     assert {"--resume", "-r", "--continue", "-c", "--fork-session", "--print", "-p"} <= set(K.adapter("claude").reserved_options)
     assert {"--resume", "-r", "--continue", "--prompt", "-p", "--interactive", "-i", "--available-tools"} <= set(
         K.adapter("copilot").reserved_options)
-    assert {"--resume", "--continue", "--print", "-p", "-f", "--force"} <= set(K.adapter("cursor").reserved_options)
     assert "-c" not in K.adapter("codex").reserved_options  # codex `-c` stays a normal option (D8)
 
 

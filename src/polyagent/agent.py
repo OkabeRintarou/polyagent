@@ -440,7 +440,7 @@ class Agent:
         return ScreenCapture(self._adapter.footer, self._adapter.footer_block)
 
     def _screen_verified(self) -> bool:
-        """Screen capture is only used where screen samples back its rules (D12: cursor, codex)."""
+        """Screen capture is only used where screen samples back its rules (D12: codex)."""
         return self._adapter.capability(K.SCREEN_CAPTURE).state == K.VERIFIED
 
     def _log_unavailable(self) -> ReplyNotFoundError:
@@ -603,8 +603,9 @@ class Agent:
 
     def _try_rebind(self, src: _Source, digest: str) -> None:
         """After submitting: adopt the rollout the same processes now hold, when it can only be this
-        prompt's turn (exactly one file; this prompt's digest exactly once; before it nothing but codex's
-        environment context). Adopted, the turn is read from the log from position 0 (D12)."""
+        prompt's turn (exactly one file; this prompt's digest exactly once; before it no ended turn, no
+        assistant message and at most one turn start). Adopted, the turn is read from the log from
+        position 0 (D12)."""
         if src.log is not None or not src.rebind:
             return
         if any(locate.process_start(pid) != start for pid, start in src.rebind):

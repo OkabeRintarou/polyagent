@@ -38,8 +38,6 @@ def sanitize(adapter: K.KindAdapter, text: object) -> str:
     if not first:
         raise InvalidPromptError("the prompt is empty")
     guard = adapter.prompt_guard
-    if "\n" in text and not guard.multiline:
-        raise InvalidPromptError(f"{adapter.kind} does not take multi-line prompts as one message")
     if first in guard.rejected:
         task = guard.rejected[first]
         why = f"unverified, task {task}" if task else "no guard works for it"

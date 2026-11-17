@@ -236,7 +236,7 @@ def test_unknown_status_follows_the_log(tmp_path):
 
 
 def test_unknown_status_without_a_log_waits_briefly(tmp_path):
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
     c.set_status("a", "unknown")
     c.wait_result = lambda *a: herr(H.TIMEOUT, "t")
     with pytest.raises(AgentBusyError):
@@ -416,12 +416,12 @@ def test_blocked_before_submitting_is_handled_first(tmp_path):
 
 
 def test_screen_capture_when_no_log(tmp_path):
-    """Scenario: 退回屏幕截取 (cursor)."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    """Scenario: 退回屏幕截取 (codex without a bound rollout)."""
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "older output\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
 
     def on_prompt(fake, name, text, wait):
-        fake.recent = f"older output\n  {text}\n  The answer is 42.\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+        fake.recent = f"older output\n\n› {text}\n\n• The answer is 42.\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
 
     c.on_prompt = on_prompt
     r = agent.ask_reply("What is the answer?", 5)
@@ -430,8 +430,8 @@ def test_screen_capture_when_no_log(tmp_path):
 
 def test_reply_that_cannot_be_separated(tmp_path):
     """Scenario: 无法分离回复 — ReplyNotFoundError with the screen, never the raw screen as a reply."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "older output\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
     c.screens = ["visible screen text"]
     c.on_prompt = lambda fake, name, text, wait: setattr(fake, "recent", "something else entirely\n")
     with pytest.raises(ReplyNotFoundError) as ei:
@@ -475,13 +475,13 @@ def test_wait_reply_rejects_foreign_pending(tmp_path):
 
 
 def test_screen_pending_round_trip(tmp_path):
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "older output\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
     c.on_prompt = lambda fake, name, text, wait: fake.set_status(name, "working")
     with pytest.raises(AgentTimeoutError) as ei:
         agent.ask("What is the answer?", 0.2)
     assert ei.value.pending["source"] == "screen"
-    c.recent = "older output\n  What is the answer?\n  42\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c.recent = "older output\n\n› What is the answer?\n\n• 42\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
     c.set_status("a", "idle")
     assert agent.wait_reply(ei.value.pending, 5).text == "42"
 
@@ -829,12 +829,12 @@ def test_bound_adapter_is_reused(tmp_path):
 
 def test_screen_delivery_evidence_is_the_echo(tmp_path):
     """Review C11 (second point): the echo alone confirms delivery; the reply may come later."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "older output\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
 
     def on_prompt(fake, name, text, wait):
-        fake.recent = f"older output\n  {text}\n"
-        later(0.05, lambda: setattr(fake, "recent", f"older output\n  {text}\n  42\n→ Add a follow-up\n  Auto Balance   Run Everything\n"))
+        fake.recent = f"older output\n\n› {text}\n"
+        later(0.05, lambda: setattr(fake, "recent", f"older output\n\n› {text}\n\n• 42\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"))
         later(0.1, fake.set_status, name, "idle")
         return herr(H.AGENT_PROMPT_STALLED, "stalled")
 
@@ -871,31 +871,31 @@ def test_screen_echo_is_no_delivery_evidence_without_screen_samples(tmp_path):
 # ---- phase-4 final review (N1, N2) --------------------------------------------------------------------
 
 
-def cursor_three_pings(tmp_path):
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "\n".join(["Cursor Agent"] + ["> ping", "PONG"] * 3 + ["→ Add a follow-up", "  Auto Balance   Run Everything"]) + "\n"
+def codex_three_pings(tmp_path):
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "\n".join(["  >_ OpenAI Codex (v0.167.0)"] + ["› ping", "• PONG"] * 3 + ["› Ask Codex to do anything", "", "  gpt default · /tmp/repo · ← for agents"]) + "\n"
     return c, agent
 
 
 def test_undelivered_fourth_identical_prompt_is_not_answered_with_the_third_reply(tmp_path):
     """Review N1: three identical ping/PONG turns on screen; the fourth prompt never shows up."""
-    c, agent = cursor_three_pings(tmp_path)
+    c, agent = codex_three_pings(tmp_path)
     c.on_prompt = lambda *a: None  # herdr reports success, nothing reaches the screen
     with pytest.raises(ReplyNotFoundError):
         agent.ask_reply("ping", 2)
 
 
 def test_delivered_fourth_identical_prompt_gets_its_own_reply(tmp_path):
-    c, agent = cursor_three_pings(tmp_path)
+    c, agent = codex_three_pings(tmp_path)
     c.on_prompt = lambda fake, name, text, wait: setattr(
-        fake, "recent", fake.recent.replace("→ Add a follow-up", f"> {text}\nPONG 4\n→ Add a follow-up"))
+        fake, "recent", fake.recent.replace("› Ask Codex", f"› {text}\n• PONG 4\n› Ask Codex"))
     r = agent.ask_reply("ping", 2)
     assert (r.text, r.source) == ("PONG 4", "screen")
 
 
 def test_undelivered_identical_prompt_is_not_confirmed_by_an_old_echo(tmp_path):
     """Review N1: `echo_seen` used for delivery confirmation has the same rule."""
-    c, agent = cursor_three_pings(tmp_path)
+    c, agent = codex_three_pings(tmp_path)
     c.on_prompt = lambda *a: herr(H.AGENT_PROMPT_STALLED, "stalled")
     with pytest.raises(PromptNotDeliveredError):
         agent.ask("ping", 5)
@@ -905,7 +905,7 @@ def test_occurrences_are_counted_on_the_widest_window(tmp_path, monkeypatch):
     """Review N1: the reply retry reads 4x more lines; old occurrences that only it shows must not count
     as after the pre-submit position."""
     monkeypatch.setattr(A, "SCREEN_LINES", 4)
-    c, agent = cursor_three_pings(tmp_path)
+    c, agent = codex_three_pings(tmp_path)
 
     def agent_read(name, source="recent-unwrapped", lines=None):
         text = c.recent if source != "visible" else "visible"
@@ -921,8 +921,8 @@ def test_occurrences_are_counted_on_the_widest_window(tmp_path, monkeypatch):
 def test_state_change_evidence_starts_after_the_pre_check_wait(tmp_path, before):
     """Review N2: the state compared for delivery is the one after waiting for the earlier turn; a
     stalled, undelivered prompt is PromptNotDelivered, not a 'state changed' delivery."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "older output\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
     c.set_status("a", before)
     c.wait_result = lambda fake, name, ms, until: fake.set_status(name, "idle") if fake.agents[name][
         "agent_status"] != "idle" else None
@@ -934,9 +934,9 @@ def test_state_change_evidence_starts_after_the_pre_check_wait(tmp_path, before)
 # ---- phase-4 spot check (S1, S3) ----------------------------------------------------------------------
 
 
-def cursor_one_ping(tmp_path):
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "Cursor Agent\n> ping\nPONG\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+def codex_one_ping(tmp_path):
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "  >_ OpenAI Codex (v0.167.0)\n› ping\n• PONG\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
     return c, agent
 
 
@@ -944,7 +944,7 @@ def cursor_one_ping(tmp_path):
 def test_failed_pre_submit_read_is_not_an_empty_screen(tmp_path, turn):
     """Review S1: the read that records the baseline fails; an empty baseline would make the old
     ping/PONG pass for this prompt's echo and reply. Nothing is submitted, herdr's error is raised."""
-    c, agent = cursor_one_ping(tmp_path)
+    c, agent = codex_one_ping(tmp_path)
     orig = c.agent_read
     failed = []
 
@@ -959,7 +959,7 @@ def test_failed_pre_submit_read_is_not_an_empty_screen(tmp_path, turn):
         "not_delivered": lambda *a: None,
         "stalled": lambda *a: herr(H.AGENT_PROMPT_STALLED, "stalled"),
         "delivered": lambda fake, name, text, wait: setattr(
-            fake, "recent", fake.recent.replace("→ Add", f"> {text}\nNEW ANSWER\n→ Add")),
+            fake, "recent", fake.recent.replace("› Ask Codex", f"› {text}\n• NEW ANSWER\n› Ask Codex")),
     }[turn]
     with pytest.raises(HerdrError) as ei:
         agent.ask_reply("ping", 2)
@@ -968,7 +968,7 @@ def test_failed_pre_submit_read_is_not_an_empty_screen(tmp_path, turn):
 
 
 def test_pre_submit_read_of_a_vanished_agent_is_agent_not_found(tmp_path):
-    c, agent = cursor_one_ping(tmp_path)
+    c, agent = codex_one_ping(tmp_path)
     c.agent_read = lambda *a, **k: (_ for _ in ()).throw(herr(H.AGENT_NOT_FOUND, "gone"))
     with pytest.raises(AgentNotFoundError):
         agent.ask("ping", 2)
@@ -976,13 +976,13 @@ def test_pre_submit_read_of_a_vanished_agent_is_agent_not_found(tmp_path):
 
 
 def timed_out_fourth_ping(tmp_path):
-    c, agent = cursor_three_pings(tmp_path)
+    c, agent = codex_three_pings(tmp_path)
     c.on_prompt = lambda fake, name, text, wait: fake.set_status(name, "working")
     with pytest.raises(AgentTimeoutError) as ei:
         agent.ask("ping", 0.2)
     pending = json.loads(json.dumps(ei.value.pending))
     assert pending["source"] == "screen" and pending["count"] == 2 and pending["baseline"]
-    other = A.Agent(c, name="a", kind="cursor", policy="full_auto", workspace_id="w1", pane_id="w1:p1", label="LABEL")
+    other = A.Agent(c, name="a", kind="codex", policy="full_auto", workspace_id="w1", pane_id="w1:p1", label="LABEL")
     other._find_log_path = lambda: None  # type: ignore[method-assign]
     return c, other, pending
 
@@ -997,7 +997,7 @@ def test_wait_reply_applies_the_count_when_the_prompt_never_arrived(tmp_path):
 
 def test_wait_reply_applies_the_count_when_the_prompt_arrived(tmp_path):
     c, other, pending = timed_out_fourth_ping(tmp_path)
-    c.recent = c.recent.replace("→ Add", "> ping\nPONG 4\n→ Add")
+    c.recent = c.recent.replace("› Ask Codex", "› ping\n• PONG 4\n› Ask Codex")
     c.set_status("a", "idle")
     assert other.wait_reply(pending, 2).text == "PONG 4"
 
@@ -1015,10 +1015,10 @@ def test_malformed_count_is_refused(tmp_path, count):
 
 def test_empty_baseline_with_count_zero_is_accepted(tmp_path):
     """A fresh screen (first prompt) has no baseline and a count of 0."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    pending = {"v": A.PENDING_VERSION, "agent": "a", "kind": "cursor", "sid": None, "digest": prompt_digest("q"),
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    pending = {"v": A.PENDING_VERSION, "agent": "a", "kind": "codex", "sid": None, "digest": prompt_digest("q"),
                "source": "screen", "baseline": [], "count": 0, "echo": ["q"]}
-    c.recent = "> q\nanswer\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c.recent = "› q\n\n• answer\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
     assert agent.wait_reply(pending, 2).text == "answer"
 
 
@@ -1238,9 +1238,9 @@ def test_queued_prompt_in_turns_of_their_own_is_ambiguous(tmp_path):
 
 
 def test_unrecognized_screen_before_submitting_is_busy(tmp_path):
-    """Scenario: 屏幕不在可识别的输入状态 — herdr says idle, the screen bottom is not cursor's input area."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "Cursor Agent\n  some dialog we do not know\n  [y] yes  [n] no\n"
+    """Scenario: 屏幕不在可识别的输入状态 — herdr says idle, the screen bottom is not codex's input area."""
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "  >_ OpenAI Codex (v0.167.0)\n  some dialog we do not know\n  [y] yes  [n] no\n"
     c.on_prompt = lambda fake, name, text, wait: None
     with pytest.raises(AgentBusyError, match="recognizable input state"):
         agent.ask("What is the answer?", 2)
@@ -1249,11 +1249,11 @@ def test_unrecognized_screen_before_submitting_is_busy(tmp_path):
 
 def test_prompt_left_in_the_input_box_raises_instead_of_returning_the_status_line(tmp_path):
     """Scenario: prompt 留在输入框里没有提交."""
-    c, agent, _ = make(tmp_path, kind="cursor", log=False)
-    c.recent = "older output\n→ Add a follow-up\n  Auto Balance   Run Everything\n"
+    c, agent, _ = make(tmp_path, kind="codex", log=False)
+    c.recent = "older output\n\n› Ask Codex to do anything\n\n  gpt default · /tmp/repo · ← for agents\n"
 
     def on_prompt(fake, name, text, wait):  # typed into the input line, never submitted
-        fake.recent = f"older output\n→ {text}\n  Auto Balance   Run Everything\n"
+        fake.recent = f"older output\n\n› {text}\n\n  gpt default · /tmp/repo · ← for agents\n"
 
     c.on_prompt = on_prompt
     with pytest.raises((ReplyNotFoundError, PromptNotDeliveredError)):
@@ -1438,3 +1438,82 @@ def test_codex_timeout_after_adoption_gives_a_log_pending(tmp_path, monkeypatch)
     with pytest.raises(AgentTimeoutError) as ei:
         agent.ask(PONG_PROMPT, 0.5)
     assert {k: ei.value.pending[k] for k in ("source", "mark")} == {"source": "session_log", "mark": 0}
+
+
+# ---- task 13.42: what may come before the prompt in an adopted rollout (D12, phase 10 D-3) -------------
+
+
+def _codex_user(text):
+    return json.dumps({"type": "response_item", "payload": {"type": "message", "role": "user",
+                                                             "content": [{"type": "input_text", "text": text}]}}) + "\n"
+
+
+def _codex_event(kind, **payload):
+    return json.dumps({"type": "event_msg", "payload": {"type": kind, **payload}}) + "\n"
+
+
+def _before_prompt(*extra):
+    """The real first turn with ``extra`` lines put right before the prompt's user message."""
+    first = _sample(1)
+    i = next(i for i, ln in enumerate(first) if PONG_PROMPT in ln and '"role": "user"' in ln)
+    return first[:i] + list(extra) + first[i:]
+
+
+@pytest.mark.parametrize("own", [
+    "<user_instructions>\n# AGENTS.md\nKeep answers short.\n</user_instructions>",
+    "<user_shell_command>\n<command>ls</command>\n<result>a.txt</result>\n</user_shell_command>",
+    "Some text codex wrote itself, with no tag at all.",
+])
+def test_codex_messages_of_its_own_before_the_prompt_still_adopt(tmp_path, monkeypatch, own):
+    """Scenario: 日志开头有 agent 自己写的消息 — any other user message before the prompt is not looked at."""
+    c, agent, seen = _codex(tmp_path, monkeypatch, _before_prompt(_codex_user(own)))
+    r = agent.ask_reply(PONG_PROMPT, 5)
+    assert (r.text, r.source) == ("PONG", "session_log")
+
+
+@pytest.mark.parametrize("marker", [
+    _codex_event("task_complete", last_agent_message="OLD"),
+    _codex_event("turn_aborted", reason="interrupted"),
+    json.dumps({"type": "response_item", "payload": {"type": "message", "role": "assistant",
+                                                      "content": [{"type": "output_text", "text": "OLD"}]}}) + "\n",
+    _codex_event("item_completed", item={"type": "AgentMessage", "content": [{"type": "Text", "text": "OLD"}]}),
+    _codex_event("task_started", turn_id="second"),
+], ids=["task_complete", "turn_aborted", "assistant", "agent_message_item", "second_turn_start"])
+def test_codex_rollout_with_a_turn_before_the_prompt_is_not_adopted(tmp_path, monkeypatch, marker):
+    """Scenario: 提交之后出现的日志里已有别的回合 — an ended or answered turn, or a second turn start."""
+    c, agent, seen = _codex(tmp_path, monkeypatch, _before_prompt(marker))
+    r = agent.ask_reply(PONG_PROMPT, 5)
+    assert (r.text, r.source) == ("SCREEN REPLY", "screen")
+
+
+def test_codex_rollout_without_the_prompt_yet_is_looked_at_again(tmp_path, monkeypatch):
+    """Only codex's own messages in the file at first: no verdict, the next look adopts it once the
+    prompt has been written."""
+    first = _sample(1)
+    i = next(i for i, ln in enumerate(first) if PONG_PROMPT in ln and '"role": "user"' in ln)
+    head = first[:i] + [_codex_user("<user_instructions>\nproject notes\n</user_instructions>")]
+    c, agent, seen = _codex(tmp_path, monkeypatch, head)
+    rollout = tmp_path / "rollout-2026-11-17T00-00-00-x.jsonl"
+    real = c.on_prompt
+
+    def on_prompt(fake, name, text, wait):
+        real(fake, name, text, wait)
+        fake.set_status(name, "working")
+        def finish():
+            with rollout.open("a") as f:
+                f.write("".join(first[i:]))
+            fake.set_status(name, "done")
+
+        later(0.15, finish)
+
+    c.on_prompt = on_prompt
+    r = agent.ask_reply(PONG_PROMPT, 5)
+    assert (r.text, r.source) == ("PONG", "session_log")
+
+
+def test_codex_real_first_turn_with_project_instructions_is_adopted(tmp_path, monkeypatch):
+    """Task 13.42: the real rollout of a first turn in a directory with `AGENTS.md`."""
+    rel = Path(__file__).parent / "fixtures" / "logs" / "codex" / "agents-md-first-turn.rollout.jsonl"
+    c, agent, seen = _codex(tmp_path, monkeypatch, rel.read_text().splitlines(keepends=True))
+    r = agent.ask_reply(PONG_PROMPT, 5)
+    assert (r.text, r.source) == ("PONG", "session_log")

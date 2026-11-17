@@ -12,7 +12,7 @@ import pickle
 import pytest
 
 from polyagent import kinds as K
-from polyagent.errors import InvalidConfigError
+from polyagent.errors import InvalidConfigError, PolicyNotSupportedError
 from polyagent.spec import AgentSpec, ClaudeProvider, ToolPolicy
 
 TOKEN = "fake-token-0123456789"
@@ -28,9 +28,21 @@ def test_unsupported_kind():
         AgentSpec(kind="foo")
 
 
-def test_cursor_agent_alias_and_known_kinds():
-    assert AgentSpec(kind="cursor-agent").kind == "cursor"
+def test_known_kinds():
     assert {AgentSpec(kind=k).kind for k in K.KINDS} == set(K.KINDS)
+
+
+@pytest.mark.parametrize("policy", [None, "full_auto", "read_only"])
+@pytest.mark.parametrize("kind", ["cursor", "cursor-agent"])
+def test_cursor_is_not_supported_in_v1(kind, policy):
+    """Scenarios: 以 cursor 启动 / 以 cursor-agent 启动 / 错误类型 — a configuration error naming cursor and
+    why, never "policy not supported" (another policy would not help), whatever the policy."""
+    with pytest.raises(InvalidConfigError) as ei:
+        AgentSpec(kind=kind, policy=policy)
+    assert type(ei.value) is InvalidConfigError and not isinstance(ei.value, PolicyNotSupportedError)
+    msg = str(ei.value)
+    assert "cursor is not supported in polyagent v1" in msg
+    assert "self-update" in msg and "home directory" in msg and "prompt guards" in msg and "roadmap" in msg
 
 
 @pytest.mark.parametrize("name", ["1BAD", "A-B", "A B", "", "Ä"])

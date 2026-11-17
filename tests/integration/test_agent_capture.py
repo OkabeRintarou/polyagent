@@ -244,3 +244,33 @@ def test_codex_status_line_samples(agent_lab, case):
     print(json.dumps(obs))
     assert reply.source == "session_log"
     assert obs["before"]["recognized"] and obs["after"]["recognized"], obs
+
+
+def test_codex_first_turn_with_project_instructions(agent_lab):
+    """Task 13.42 (after the rule change): in a working directory with a project instructions file
+    (`AGENTS.md`) codex may write more user messages of its own before the prompt; the first turn is
+    still read from the session log (D12 "提交后再绑定"). What precedes the prompt is recorded."""
+    require_kind("codex")
+    cwd = agent_lab.work("codex-agents", files={"AGENTS.md": "# Project notes\n\nAnswer in as few words as asked.\n"})
+    agent = agent_lab.start("codex", cwd)
+    reply = agent.ask_reply(PONG, 300)
+    rollouts = sorted((agent_lab.homes["CODEX_HOME"] / "sessions").rglob("rollout-*.jsonl"))
+    entries = CodexLog(str(rollouts[0])).log.entries() if len(rollouts) == 1 else []
+    log = CodexLog("")
+    before = []
+    for e in entries:
+        text = log._user_text(e)
+        if text is not None and text.strip() == PONG:
+            break
+        p = e.get("payload") if isinstance(e.get("payload"), dict) else {}
+        before.append({"type": e.get("type"), "payload_type": p.get("type"), "role": p.get("role"),
+                       "user_text_head": text.lstrip()[:24] if text is not None else None})
+    obs = {"source": reply.source, "rollouts": len(rollouts), "before_prompt": before,
+           "user_messages_before": sum(1 for b in before if b["user_text_head"] is not None),
+           "turn_starts_before": sum(1 for b in before if b["payload_type"] == "task_started")}
+    agent.close()
+    _dump(agent_lab, "codex-agents-md/observations.json", obs)
+    if rollouts:
+        _dump(agent_lab, "codex-agents-md/rollout.jsonl", rollouts[0].read_text())
+    print(json.dumps(obs))
+    assert "PONG" in reply.text and reply.source == "session_log", obs

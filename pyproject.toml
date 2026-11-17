@@ -1,7 +1,7 @@
 [project]
 name = "polyagent"
 version = "0.1.0"
-description = "Drive locally installed coding-agent CLIs (codex, copilot, cursor, claude) through herdr from Python."
+description = "Drive locally installed coding-agent CLIs (codex, copilot, claude) through herdr from Python."
 requires-python = ">=3.10"
 dependencies = []
 

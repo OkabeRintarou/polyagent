@@ -39,8 +39,6 @@ class ScreenCapture:
         after = [line for line in lines[idx + 1:] if line.strip()]
         if not b.min_after <= len(after) <= b.max_after:
             return None
-        if b.status and not any(m.search(line) for line in after for m in b.status):
-            return None
         if b.status_line is not None and not all(b.status_line(line) for line in after):
             return None
         return idx

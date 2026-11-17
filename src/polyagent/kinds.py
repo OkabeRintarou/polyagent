@@ -90,7 +90,6 @@ class PromptGuard:
     # First non-blank characters refused outright -> the task that could lift the refusal, or None
     # when no guard works (verified).
     rejected: Mapping[str, str | None]
-    multiline: bool
     # Largest prompt (UTF-8 bytes, after the guard) the kind takes as message text; None: only the
     # library-wide limit. Task 13.14: copilot saves a longer paste to a file and the message becomes a
     # reference to it, so the model never sees the text.
@@ -104,12 +103,10 @@ class PromptGuard:
 class FooterBlock:
     """A bottom footer block (D12): it starts at the last line of the screen read matching ``input_line``
     (the input line), which must not match ``input_exclude``; it is followed by ``min_after`` to
-    ``max_after`` non-blank lines; when ``status`` is not empty one of those lines matches a status
-    marker, and when ``status_line`` is given every one of them satisfies it. A screen without such a
-    block is not in a recognizable input state."""
+    ``max_after`` non-blank lines, and when ``status_line`` is given every one of them satisfies it. A
+    screen without such a block is not in a recognizable input state."""
 
     input_line: re.Pattern[str]
-    status: tuple[re.Pattern[str], ...] = ()
     max_after: int = 4
     min_after: int = 0
     # The input line must not match this (codex: a numbered option of a selection dialog, D12).
@@ -179,9 +176,7 @@ class KindAdapter:
     default_config_dir: str  # relative to the passwd home
     config_env_prefixes: tuple[str, ...]
     config_env_names: tuple[str, ...]
-    always_forbidden_env_prefixes: tuple[str, ...]  # refused under both policies
     permission_env_vars: tuple[str, ...]  # unset in the pane under read_only (D6)
-    prestart_env: Mapping[str, str]  # exported in the pane under both policies (D6)
     read_only_safe_options: tuple[SafeOption, ...]
     repo_config_paths: tuple[str, ...]  # checked from cwd up to the repo root under read_only
     excludes_project_config: bool  # read_only args already exclude project-level config
@@ -202,7 +197,6 @@ class KindAdapter:
     # `--env`), and exported again by the preparation script before the caller's variables, so a caller
     # value of the same name wins (D6: claude's self-update, phase 8). They never make a start prepare.
     pane_env: Mapping[str, str] = field(default_factory=dict)
-    trust_by_flag: bool = False  # cursor: `--trust` instead of a dialog (persisted, D9)
     secret_env_flag: str | None = None  # hides injected variable names from tools under read_only
     notes: tuple[str, ...] = field(default=())
 
@@ -258,8 +252,6 @@ CLAUDE_READ_ONLY_ALLOW = ("Read", "Grep", "Glob")
 # `bash` with mode=async has the same effect but cannot be excluded on its own (phase-3 finding P3-1).
 COPILOT_ASYNC_TOOLS = ("task", "read_agent", "write_agent", "list_agents", "run_dynamic_workflow", "dynamic_workflows_manage")
 COPILOT_READ_ONLY_TOOLS = ("view", "grep", "glob")
-# Unreachable loopback address (discard port): stops cursor-agent from upgrading the user's install.
-CURSOR_UPDATE_URL = "http://127.0.0.1:9/"
 
 ADAPTERS: dict[str, KindAdapter] = {
     "claude": KindAdapter(
@@ -309,9 +301,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         config_env_prefixes=("CLAUDE_",),
         config_env_names=("USE_BUILTIN_RIPGREP", "ENABLE_TOOL_SEARCH", "ENABLE_CLAUDEAI_MCP_SERVERS",
                           "BETA_TRACING_ENDPOINT", "ENABLE_BETA_TRACING_DETAILED", "FORCE_AUTOUPDATE_PLUGINS"),
-        always_forbidden_env_prefixes=(),
         permission_env_vars=(),
-        prestart_env={},
         pane_env={"DISABLE_AUTOUPDATER": "1"},  # claude ignores autoUpdates=false in its config (P8-5)
         read_only_safe_options=(_opt("--effort", r"low|medium|high|xhigh|max"),),
         repo_config_paths=(),
@@ -324,7 +314,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("bypass_permissions", FULL_AUTO_CONFIRM, "running in Bypass Permissions mode",
                     "No, exit", "Yes, I accept", keys=("down", "enter"), persisted=True),
         ),
-        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}, multiline=True),
+        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}),
         status_trusted=True,
         deny_key="esc",
         interrupt_key="esc",
@@ -371,9 +361,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         # against. GH_TOKEN/GITHUB_TOKEN stay allowed: they are the ordinary way to give copilot a credential
         # (hidden from its tools under read_only, D8); phase-7 finding P7-6.
         config_env_names=("USE_BUILTIN_RIPGREP", "USE_TGREP", "GH_HOST"),
-        always_forbidden_env_prefixes=(),
         permission_env_vars=("COPILOT_ALLOW_ALL", "COPILOT_ASSISTED_APPROVAL"),
-        prestart_env={},
         read_only_safe_options=(_opt("--reasoning-effort", r"none|minimal|low|medium|high|xhigh|max"),),
         repo_config_paths=(
             ".github/hooks", ".github/copilot/settings.json", ".mcp.json", ".vscode/mcp.json",
@@ -384,7 +372,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("trust", TRUST, "Confirm folder trust", "Do you trust the files in this folder?", "1. Yes",
                     "2. Yes, and remember this folder", "3. No", keys=("enter",), persisted=False),
         ),
-        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}, multiline=True, max_bytes=COPILOT_PASTE_LIMIT),
+        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}, max_bytes=COPILOT_PASTE_LIMIT),
         status_trusted=False,
         # Its input box: a `❯` line between two rules, all at column 0 (dialog boxes are drawn with `│`).
         ready_screen=re.compile(r"(?m)^─{20,}[ \t]*\n❯[^\n]*\n─{20,}[ \t]*$"),
@@ -425,9 +413,7 @@ ADAPTERS: dict[str, KindAdapter] = {
         default_config_dir=".codex",
         config_env_prefixes=("CODEX_",),
         config_env_names=(),
-        always_forbidden_env_prefixes=(),
         permission_env_vars=(),
-        prestart_env={},
         read_only_safe_options=(_opt("-c", r"model_reasoning_effort=(minimal|low|medium|high|xhigh)"),),
         repo_config_paths=(".codex",),
         excludes_project_config=False,
@@ -435,71 +421,18 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("trust", TRUST, "Trust this folder?", "Your trust decision will be saved",
                     "1. Trust and continue", keys=None, persisted=True),
         ),
-        prompt_guard=PromptGuard(LEADING_SPACE, GUARDED_PREFIXES - {"#", "$", "?"}, dict.fromkeys("#$?", "13.8"),
-                                 multiline=True),
+        prompt_guard=PromptGuard(LEADING_SPACE, GUARDED_PREFIXES - {"#", "$", "?"}, dict.fromkeys("#$?", "13.8")),
         status_trusted=True,
         deny_key=None,
         interrupt_key="esc",
         log_binding="rollout_fd",
         # codex shows submitted prompts in the transcript as `› <prompt>` too (phase-2 screen, phase-7
-        # finding), and its selection dialogs use `›` as their cursor. D12 (task 13.31): the last `›` line,
+        # finding), and its selection dialogs mark the chosen option with `›`. D12 (task 13.31): the last `›` line,
         # not a numbered option, followed by exactly one non-blank line: the status line, with ` · `
         # separated fields and no `enter`/`esc` key hint.
         footer_block=FooterBlock(re.compile(r"^›(?: |\s*$)"), max_after=1,
                                  min_after=1, input_exclude=re.compile(r"^›\s*\d+\."),
                                  status_line=codex_status_line),
-    ),
-    "cursor": KindAdapter(
-        kind="cursor",
-        herdr_kind="cursor",
-        executable="cursor-agent",
-        model_flag="--model",
-        # `-f`/`--force` are aliases of `--yolo` and `--continue` resumes a session (cursor-agent --help).
-        reserved_options=("--model", "--yolo", "-f", "--force", "--trust", "--resume", "--continue", "--print", "-p"),
-        read_only_args=(),
-        full_auto_args=("--yolo",),
-        read_only_lists=(),
-        full_auto_lists=(),
-        session_id_flag=None,
-        capabilities={
-            READ_ONLY: Capability(UNSUPPORTED, note="ask mode ran a networked shell command; web search can only be "
-                                                     "refused by a running dialog; prompt guards do not hold"),
-            MCP_ALLOW: Capability(UNSUPPORTED),
-            LOG_ADAPTER: Capability(UNVERIFIED, task="13.7"),
-            INTERRUPT_KEY: Capability(VERIFIED),
-            SCREEN_CAPTURE: Capability(VERIFIED),
-            TURN_ATTRIBUTION_READ_ONLY: Capability(UNSUPPORTED, note="read_only is not supported"),
-            TURN_ATTRIBUTION_FULL_AUTO: Capability(UNVERIFIED, task="13.7"),
-            IGNORE_USER_CONFIG: Capability(UNVERIFIED, task="13.5"),
-        },
-        config_dir_var="CURSOR_CONFIG_DIR",
-        default_config_dir=".cursor",
-        config_env_prefixes=("CURSOR_", "AGENT_CLI_"),
-        config_env_names=(),
-        always_forbidden_env_prefixes=("AGENT_CLI_",),
-        permission_env_vars=(),
-        prestart_env={"AGENT_CLI_UPDATE_CHECK_URL": CURSOR_UPDATE_URL},
-        read_only_safe_options=(),
-        repo_config_paths=(),
-        excludes_project_config=False,
-        dialogs=(
-            _dialog("trust", TRUST, "[a] Trust this workspace", "[q] Quit", keys=None, persisted=True),
-        ),
-        # `/`: neither guard works (verified); `#@$?`: unverified, task 13.7.
-        prompt_guard=PromptGuard(LEADING_SPACE, frozenset("!-"), {"/": None, **dict.fromkeys("#@$?", "13.7")},
-                                 multiline=False),
-        status_trusted=True,
-        deny_key="esc",
-        interrupt_key="esc",
-        log_binding=None,
-        trust_by_flag=True,
-        # The input line starts with "→ ": "→ Plan, search, build anything" before the first prompt,
-        # "→ Add a follow-up" after a turn, and for a moment after a turn the previous prompt itself
-        # ("→ <prompt>", phase-5 run); all of them end the reply region.
-        # Input line: `→ Plan, search, build anything`, `→ Add a follow-up` or, briefly, `→ <last prompt>`;
-        # status line: `Run Everything` (full_auto) or `(shift+tab to cycle)` (ask mode) at the end.
-        footer_block=FooterBlock(re.compile(r"^\s*→ "),
-                                 (re.compile(r"Run Everything\s*$"), re.compile(r"\(shift\+tab to cycle\)\s*$"))),
     ),
 }
 

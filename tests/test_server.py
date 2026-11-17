@@ -249,7 +249,7 @@ def test_explicit_passthrough(fake, monkeypatch):
 
 @pytest.mark.parametrize(
     "name",
-    ["COPILOT_ALLOW_ALL", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "CURSOR_API_KEY",
+    ["COPILOT_ALLOW_ALL", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK",
      "BASH_ENV", "ENV", "NODE_OPTIONS", "LD_PRELOAD", "HERDR_SOCKET_PATH", "1BAD", "A-B",
      # task 13.11: what every pane shell would run or expand, node module resolution, account/host choice
      "PROMPT_COMMAND", "PS0", "PS1", "PS4", "SHELLOPTS", "BASHOPTS", "NODE_PATH", "GH_HOST",

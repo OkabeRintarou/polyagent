@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import re
@@ -38,6 +39,7 @@ from polyagent import (
     ReplyNotFoundError,
     SummaryTemplate,
 )
+from polyagent import kinds as K
 from polyagent import policy as P
 from polyagent.discussion import engine
 from polyagent.discussion.protocol import INPUT_BUDGET_BYTES
@@ -171,17 +173,27 @@ def test_participant_role_is_checked(role):
         Participant("critic", role, copilot())
 
 
-def test_cursor_cannot_be_coordinator(clock, tmp_path):
+def test_kind_without_a_verified_log_adapter_cannot_be_coordinator(clock, tmp_path, monkeypatch):
+    """All v1 kinds have a verified log adapter; the check is exercised by taking the state away."""
+    a = K.adapter("claude")
+    caps = dict(a.capabilities, **{K.LOG_ADAPTER: K.Capability(K.UNVERIFIED, task="13.0")})
+    monkeypatch.setitem(K.ADAPTERS, "claude", dataclasses.replace(a, capabilities=caps))
     f = FakeFactory(clock)
     with pytest.raises(InvalidConfigError, match="cannot be the coordinator"):
-        make(f, tmp_path, coordinator=AgentSpec(kind="cursor"))
+        make(f, tmp_path)
     assert f.started == 0
 
 
-def test_kind_without_multiline_prompts_cannot_be_participant(clock, tmp_path):
+@pytest.mark.parametrize("role", ["coordinator", "participant"])
+@pytest.mark.parametrize("kind", ["cursor", "cursor-agent"])
+def test_cursor_as_a_member_fails_when_its_config_is_built(clock, tmp_path, role, kind):
+    """Scenario: 不受支持的 kind 作成员 — before any agent is started."""
     f = FakeFactory(clock)
-    with pytest.raises(InvalidConfigError, match="multi-line"):
-        make(f, tmp_path, specs={"critic": AgentSpec(kind="cursor")})
+    with pytest.raises(InvalidConfigError, match="cursor is not supported in polyagent v1"):
+        if role == "coordinator":
+            make(f, tmp_path, coordinator=AgentSpec(kind=kind))
+        else:
+            make(f, tmp_path, specs={"critic": AgentSpec(kind=kind)})
     assert f.started == 0
 
 

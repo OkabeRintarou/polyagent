@@ -14,11 +14,6 @@
 | `claude/bypass-permissions-dialog.txt` | `--dangerously-skip-permissions` 的确认：“❯ No, exit / Yes, I accept” | Down + Enter；Esc 等于退出 |
 | `claude/api-key-confirmation-dialog.txt` | provider 凭据确认：“Detected a custom API key … ❯ No (recommended)”（虚构的测试密钥） | Up + Enter 选 Yes；用 `ANTHROPIC_AUTH_TOKEN` 时不出现 |
 | `claude/write-approval-dialog.txt` | 默认权限模式下 Write 的批准对话框 | Esc 拒绝，回合结束，文件未创建 |
-| `cursor/trust-dialog.txt` | “[a] Trust this workspace / [q] Quit”；`agent start` 此时已报告就绪 | `a`；用 `--trust` 不出现，但会写入 `<数据目录>/projects/<编码 cwd>/.workspace-trusted` |
-| `cursor/websearch-approval-dialog.txt` | ask 模式下的 Web Search 批准：“Allow search (y) / Run Everything (shift+tab) / Skip (esc or n)” | Esc 拒绝 |
-| `cursor/websearch-rejected-after-esc.txt` | 拒绝后该轮继续并给出总结 | — |
-| `cursor/slash-quit-on-second-line.txt` | 引导行之后第二行的 `/quit` 被执行（“Session ended.”） | — |
-| `cursor/first-prompt-before.txt`、`cursor/first-prompt-pong-after.txt` | 阶段 5 的真实屏幕（`recent-unwrapped`）：第一次提问前输入行是 `→ Plan, search, build anything`，提问后变成 `→ Add a follow-up`；两者都是页脚标记 | — |
 | `claude/two-turns-pong-markdown.txt` | 阶段 8（13.16）：read_only claude 两轮之后（`recent-unwrapped`）。回显是 `❯ <prompt>`，与输入行同一个前缀；思考行 `Thought for Ns (ctrl+o to expand)`；回复以 `● ` 开头、markdown 已渲染；每轮之后一行 `✻ <动词> for Ns · done <时刻>`；页脚是两条 `─` 横线夹着 `❯ ` 输入行，下面是状态行 | — |
 | `claude/long-prompt-echo-tail.txt` | 242 行 prompt 的回显末尾、回复和页脚；输入框下方提示 `paste again to expand` | — |
 | `copilot/first-turn-pong.txt` | 阶段 8（13.16）：read_only copilot 第一轮之后。回显是 ` ❯ <prompt>`，行尾带时刻；第一轮之后才打印的启动通知（`● MCP Servers reloaded…`、`● Disabled tools…`）出现在回显和回复之间；思考块 `⌄ Thought for Ns` 加 `│ ` 行；回复 `● PONG`；页脚是工作目录行、两条 `─` 横线夹着 `❯` 输入行、状态行 | — |
