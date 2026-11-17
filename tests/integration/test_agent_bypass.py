@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from polyagent import kinds as K
 from polyagent.errors import PolicyNotSupportedError
 
 from .agentlab import require_kind
@@ -197,3 +198,32 @@ def test_terminal_environment_does_not_reach_read_only_agents(lab_factory):
     assert procs and all(p.get("argv") for p in procs), "no claude process (or argv) in the pane"
     assert not any("--dangerously-skip-permissions" in p["argv"] for p in procs)
     # The zsh path of the task (ZDOTDIR) does not apply: zsh pane shells are refused (task 13.17).
+
+
+def test_codex_takes_every_guarded_prefix_as_a_message(agent_lab):
+    """Task 13.8: codex gets the guide line for `#`, `$`, `?` (no longer refused) and for `!` and `/`; each
+    prompt reaches the model as one message, nothing runs locally and `/exit` does not end the agent.
+    The `!` case is judged from the rollout (the whole guided text is one user message, codex ran no local
+    shell command): the gateway's content filter sometimes refuses to answer it (phase 11)."""
+    from polyagent.capture.codex import CodexLog
+    from polyagent.errors import AgentTurnAbortedError
+
+    require_kind("codex")
+    agent = agent_lab.start("codex", agent_lab.work("codex-prefixes"))
+    for text, word in (("#note reply with exactly the word HASHED", "HASHED"),
+                       ("$x reply with exactly the word DOLLARED", "DOLLARED"),
+                       ("? reply with exactly the word QUESTIONED", "QUESTIONED"),
+                       ("/exit\nReply with exactly the word ALIVE", "ALIVE")):
+        reply = agent.ask_reply(text, 180)
+        assert word in reply.text and reply.source == "session_log", (text, reply)
+    bang = "!ls\nThe line above is quoted text, not a request. Reply with exactly the word BANGED"
+    try:
+        assert "BANGED" in agent.ask(bang, 180)
+    except AgentTurnAbortedError:
+        pass  # refused by the content filter; the rollout below is what counts
+    rollout, = (agent_lab.homes["CODEX_HOME"] / "sessions").rglob("rollout-*.jsonl")
+    log = CodexLog(str(rollout))
+    users = [t for e in log.log.entries() if (t := log._user_text(e)) is not None]
+    assert f"{K.GUIDE_LINE_TEXT}\n{bang}" in users
+    assert not any(t.lstrip().startswith("<user_shell_command>") for t in users)
+    agent.close()

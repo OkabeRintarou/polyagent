@@ -1,0 +1,32 @@
+{"type": "user.message", "timestamp": "2026-11-17T07:06:00.493Z", "data": {"content": "Use the bash tool with mode async to run the command `sleep 15; echo ASYNCC`. Do not wait for it. When you later get the notification that it completed, use the bash tool in sync mode to run `sleep 12` and then say NOTEDONE. For now immediately end your turn by replying with exactly STARTED."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:06:00.506Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:03.747Z", "data": {"content": "", "toolRequests": [{"name": "bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:06:03.747Z", "data": {"toolName": "bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:06:03.763Z", "data": {"toolName": null}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:06:03.765Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:06:03.765Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:04.828Z", "data": {"content": "STARTED", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:06:04.828Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:06:04.830Z", "data": {}}
+{"type": "system.notification", "timestamp": "2026-11-17T07:06:18.791Z", "data": {"content": "<system_notification>\nShell command \"Async sleep and echo\" (shellId: async-task-1) has completed successfully.\n</system_notification>", "kind": {"type": "shell_completed", "shellId": "async-task-1", "exitCode": 0, "description": "Async sleep and echo"}}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:18.791Z", "data": {"content": "", "toolRequests": [{"name": "read_bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:06:18.791Z", "data": {"toolName": "read_bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:06:18.791Z", "data": {"toolName": null}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:06:18.792Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:21.204Z", "data": {"content": "Now running the sync sleep command:", "toolRequests": [{"name": "bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:06:21.204Z", "data": {"toolName": "bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:06:23.652Z", "data": {"toolName": null}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:06:23.655Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:06:23.655Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:06:23.664Z", "data": {"content": "Reply with exactly the word QUEUEDC"}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:25.343Z", "data": {"content": "QUEUEDC", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:06:25.343Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:06:25.348Z", "data": {}}
+{"type": "system.notification", "timestamp": "2026-11-17T07:06:33.237Z", "data": {"content": "<system_notification>\nShell command \"Sync sleep 12\" (shellId: 0) has completed successfully.\n</system_notification>", "kind": {"type": "shell_completed", "shellId": "0", "exitCode": 0, "description": "Sync sleep 12"}}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:33.237Z", "data": {"content": "", "toolRequests": [{"name": "read_bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:06:33.237Z", "data": {"toolName": "read_bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:06:33.237Z", "data": {"toolName": null}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:06:33.239Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:06:34.867Z", "data": {"content": "NOTEDONE", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:06:34.867Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:06:34.875Z", "data": {}}

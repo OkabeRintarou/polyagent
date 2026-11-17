@@ -17,6 +17,7 @@ from .base import Judgement, LogAdapter, Outcome, prompt_digest
 
 END = "session.usage_checkpoint"
 ERROR = "session.error"
+ABORT = "abort"  # task 13.3: ctrl+c during a turn; the checkpoint follows
 USER = "user.message"
 NOTIFICATION = "system.notification"
 # Main-session events showing that a notification did start a turn (D11).
@@ -78,6 +79,8 @@ class CopilotLog(LogAdapter):
             if t == ERROR:
                 msg = _data(e).get("message")
                 return Judgement(Outcome.ERROR, msg if isinstance(msg, str) and msg else "agent error")
+            if t == ABORT:  # interrupted: whatever it wrote before is not a final reply (task 13.3)
+                return Judgement(Outcome.ABORTED)
             if t == "assistant.message" and not _data(e).get("toolRequests"):
                 content = _data(e).get("content")
                 if isinstance(content, str) and content.strip():
@@ -94,7 +97,7 @@ class CopilotLog(LogAdapter):
         activity = False
         for e in reversed(main):
             t = e.get("type")
-            if t in (END, ERROR):
+            if t in (END, ERROR, ABORT):
                 return False
             if t == USER:
                 return True

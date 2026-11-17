@@ -38,6 +38,8 @@ claude 去掉了 `api-request*` 与 `attachment` 条目；超过 1500 字符的�
 | 文件 | 内容 |
 |---|---|
 | `codex/long-prompts.rollout.jsonl` | full_auto：PONG、多步 markdown、242 行（8810 字节）、348 行（63484 字节）四轮，长 prompt 都是一条逐字的用户消息。第一轮之前 codex 没有打开任何 rollout 文件，提交后约 0.3 秒才新建并打开它（13.15）；第一条用户消息是 codex 自己的 `environment_context` |
+| `copilot/fullauto-notification-turn-and-prompt-timing.events.jsonl` | 任务 13.10（阶段 11，copilot 1.0.112，full_auto）：只保留用户消息、助手消息（工具请求只留名字）、系统通知（kind 只留类型、shellId、退出码、描述）、回合起止、工具执行起止和 `session.usage_checkpoint`。时序 A：异步命令的完成通知触发一个回合，回合进行中经 herdr 直接提交 `QUEUEDA`；copilot 先结束通知回合的这一段（`assistant.turn_end`，没有 checkpoint），再记下用户消息并为它跑一段，最后只有一个 checkpoint。时序 B：本轮（同步 `sleep 25`）进行中通知到达，通知之后才有最终消息 `LONGDONE` 和本轮的 checkpoint。通知种类只见到 `shell_completed` |
+| `copilot/fullauto-prompt-inside-multi-step-notification-turn.events.jsonl` | 任务 13.10 时序 C（阶段 11）：通知回合自己还在跑命令时提交 `QUEUEDC`，用户消息被记在通知回合的循环中间（内部的 `assistant.turn_start` 之后），与通知回合共用一个 checkpoint；之后另一条通知又触发了新的回合 |
 | `codex/agents-md-first-turn.rollout.jsonl` | 任务 13.42（阶段 10，2026-11-17，codex 0.167）：工作目录里有 `AGENTS.md`，full_auto 下第一轮 PONG。只保留 user/assistant 消息和 `task_started`/`task_complete`，时区替换为 `TZ`。提交之前进程没有打开 rollout；本次 prompt 之前 codex 自己写了一条用户消息，它有两段：先是 `# AGENTS.md instructions for <工作目录>` 加 `<INSTRUCTIONS>`，然后才是 `<environment_context>`，所以它不以 `<environment_context>` 开头（阶段 8 的采用条件因此会退回屏幕）；prompt 之前有一个回合开始标记、没有助手消息。按阶段 10 的四条采用，第一轮来源是 `session_log` |
 | `claude/long-prompts.jsonl` | read_only：同样四轮，长 prompt 逐字记录 |
 | `copilot/long-prompts-readonly.events.jsonl` | read_only：PONG、多步、242 行、20298 字节（低于 copilot 的 20 KiB 粘贴上限）四轮，逐字记录 |

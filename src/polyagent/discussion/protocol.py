@@ -24,6 +24,7 @@ MAX_REQUIREMENT_BYTES = 32 * 1024
 MAX_BRIEF_BYTES = 16 * 1024  # the brief as sent in a participant's first prompt (D13 "需求摘要")
 BRIEF_PROBE_QUESTION = "Is the brief clear?"  # used to check that a brief can be sent at all
 MAX_FEEDBACK_ERRORS = 20
+FEEDBACK_TAIL = "Output the corrected action."  # kept after the cut of a long feedback (C6)
 MAX_ERROR_CHARS = 300
 TRUNCATION_NOTE_RESERVE = 96  # bytes kept per reply for the truncation note
 # D13 "协调者输入的长度" (phase 8): room kept for feedback on top of the summary input, and the least
@@ -411,13 +412,16 @@ class ProtocolText:
     def after_brief(self) -> str:
         return "The brief is accepted. Dispatch questions to participants, or finish if nothing needs asking."
 
-    def feedback(self, errors: Sequence[str]) -> str:
+    def feedback(self, errors: Sequence[str], *, tail: bool = True) -> str:
+        """The rejection notice; ``tail=False`` leaves out the closing instruction (``FEEDBACK_TAIL``), which
+        the engine then puts after the cut so that a long notice never loses it (phase-9 review C6)."""
         shown = [e[:MAX_ERROR_CHARS] for e in errors[:MAX_FEEDBACK_ERRORS]]
         more = len(errors) - len(shown)
         lines = ["Your previous output was rejected:"] + [f"- {e}" for e in shown]
         if more:
             lines.append(f"- ... and {more} more")
-        lines.append("Output the corrected action.")
+        if tail:
+            lines.append(FEEDBACK_TAIL)
         return clean("\n".join(lines))
 
     def aborted(self, detail: str) -> str:

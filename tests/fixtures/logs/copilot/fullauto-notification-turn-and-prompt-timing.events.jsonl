@@ -1,0 +1,46 @@
+{"type": "user.message", "timestamp": "2026-11-17T07:03:33.290Z", "data": {"content": "Use the bash tool with mode async to run the command `sleep 20; echo ASYNCDONE`. Do not wait for it and do not read its output; immediately end your turn by replying with exactly STARTED."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:03:33.303Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:03:36.607Z", "data": {"content": "", "toolRequests": [{"name": "bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:03:36.608Z", "data": {"toolName": "bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:03:36.630Z", "data": {"toolName": null}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:03:36.632Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:03:36.632Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:03:37.609Z", "data": {"content": "STARTED", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:03:37.610Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:03:37.613Z", "data": {}}
+{"type": "system.notification", "timestamp": "2026-11-17T07:03:56.655Z", "data": {"content": "<system_notification>\nShell command \"Async background command\" (shellId: 0) has completed successfully.\n</system_notification>", "kind": {"type": "shell_completed", "shellId": "0", "exitCode": 0, "description": "Async background command"}}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:03:56.655Z", "data": {"content": "", "toolRequests": [{"name": "read_bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:03:56.655Z", "data": {"toolName": "read_bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:03:56.655Z", "data": {"toolName": null}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:03:56.656Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:03:58.425Z", "data": {"content": "The async command completed successfully and output `ASYNCDONE`.", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:03:58.425Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:03:58.456Z", "data": {"content": "Reply with exactly the word QUEUEDA"}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:03:58.458Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:04:00.400Z", "data": {"content": "QUEUEDA", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:04:00.400Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:04:00.407Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:04:10.968Z", "data": {"content": "Use the bash tool with mode async to run the command `sleep 12; echo ASYNCB`. Do not wait for it and do not read its output; immediately end your turn by replying with exactly STARTED."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:04:10.969Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:04:13.839Z", "data": {"content": "", "toolRequests": [{"name": "bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:04:13.839Z", "data": {"toolName": "bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:04:13.846Z", "data": {"toolName": null}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:04:13.848Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:04:13.848Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:04:14.811Z", "data": {"content": "STARTED", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:04:14.812Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:04:14.814Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:04:15.309Z", "data": {"content": "Use the bash tool in sync mode (not async) to run the command `sleep 25`, wait until it finishes, then reply with exactly the word LONGDONE."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:04:15.310Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:04:18.442Z", "data": {"content": "", "toolRequests": [{"name": "bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:04:18.442Z", "data": {"toolName": "bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:04:43.454Z", "data": {"toolName": null}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:04:43.459Z", "data": {}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:04:43.459Z", "data": {}}
+{"type": "system.notification", "timestamp": "2026-11-17T07:04:43.461Z", "data": {"content": "<system_notification>\nShell command \"Async background command\" (shellId: 1) has completed successfully.\n</system_notification>", "kind": {"type": "shell_completed", "shellId": "1", "exitCode": 0, "description": "Async background command"}}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:04:43.462Z", "data": {"content": "", "toolRequests": [{"name": "read_bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:04:43.462Z", "data": {"toolName": "read_bash"}}
+{"type": "tool.execution_complete", "timestamp": "2026-11-17T07:04:43.467Z", "data": {"toolName": null}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:04:45.491Z", "data": {"content": "LONGDONE", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:04:45.491Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:04:45.498Z", "data": {}}

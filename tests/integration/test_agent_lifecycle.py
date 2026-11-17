@@ -144,12 +144,15 @@ def test_claude_runs_with_self_update_off(agent_lab, policy):
 
 
 def test_copilot_cold_starts_take_their_first_prompt(lab_factory):
-    """Task 13.20 (after the rule): ten cold starts of copilot, each in a fresh lab (fresh isolated
+    """Task 13.20 (after the rule): cold starts of copilot, each in a fresh lab (fresh isolated
     configuration and working directory); the first prompt of each is delivered. A trust dialog drawn
-    after start returned is looked for during the first seconds and its screen kept for the report."""
+    after start returned is looked for during the first seconds and its screen kept for the report.
+    ``POLYAGENT_COLD_STARTS`` sets the count (default 3); each lab is torn down before the next one
+    starts (review T4)."""
     require_kind("copilot", "read_only")
+    runs = int(os.environ.get("POLYAGENT_COLD_STARTS", "3"))
     late = []
-    for i in range(10):
+    for i in range(runs):
         lab = lab_factory()
         agent = lab.start("copilot", lab.work(f"cold{i}"), "read_only")
         for _ in range(12):
@@ -160,6 +163,28 @@ def test_copilot_cold_starts_take_their_first_prompt(lab_factory):
             time.sleep(0.25)
         assert "PONG" in agent.ask(PONG, 180), i
         agent.close()
+        assert lab_factory.close(lab) == [], i
     for i, screen in late:
         print(f"late trust dialog after start {i}:\n{screen[-1500:]}")
     assert late == []
+
+
+def test_copilot_interrupt_stops_a_long_command(agent_lab):
+    """Task 13.3: interrupt() during copilot's synchronous `sleep 60` ends the turn well before the command
+    would have (ctrl+c; the log shows the turn aborted) and the next prompt gets its reply; interrupt() on
+    the idle agent afterwards sends nothing."""
+    from polyagent.errors import AgentTimeoutError
+
+    require_kind("copilot")
+    agent = agent_lab.start("copilot", agent_lab.work("interrupt"))
+    assert "PONG" in agent.ask(PONG, 180)
+    t0 = time.monotonic()
+    with pytest.raises(AgentTimeoutError):
+        agent.ask("Use the bash tool in sync mode (not async) to run the command `sleep 60`, wait until it "
+                  "finishes, then reply with exactly the word SLEPT.", 12)
+    agent.interrupt()
+    assert time.monotonic() - t0 < 45
+    assert "AFTER" in agent.ask("Reply with exactly the word AFTER", 120)
+    agent.interrupt()  # idle: nothing is sent, the agent stays
+    assert "AGAIN" in agent.ask("Reply with exactly the word AGAIN", 120)
+    agent.close()

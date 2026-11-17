@@ -375,9 +375,9 @@ def test_build_args_refuses_unverified_mcp_allow_list(repo):
         P.build_args(AgentSpec(kind="copilot", policy="read_only", mcp_allow=["docs"]), repo)
 
 
-def test_prefix_refusals_name_the_right_task():
-    """Review C8: unverified prefixes name the task that could lift the refusal."""
-    assert dict(K.adapter("codex").prompt_guard.rejected) == dict.fromkeys("#$?", "13.8")
+def test_no_kind_refuses_a_prefix():
+    """Task 13.8: every guarded prefix gets the guide line on all three kinds."""
+    assert all(not a.prompt_guard.rejected for a in K.ADAPTERS.values())  # task 13.8: none is refused
 
 
 # ---- reserved options (task 5.4) and new variable families (task 4.5) ---------------------------

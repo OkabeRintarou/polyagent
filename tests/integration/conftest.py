@@ -150,7 +150,9 @@ def temp_session(tmp_path, monkeypatch):
 @pytest.fixture
 def lab_factory(request):
     """``lab_factory(**kw)`` opens an ``AgentLab`` (one temp session, isolated agent homes); every lab
-    is torn down after the test, also when it failed, and the teardown checks are asserted."""
+    is torn down after the test, also when it failed, and the teardown checks are asserted.
+    ``lab_factory.close(lab)`` tears one lab down at once (a test that opens many in a loop, review T4)
+    and returns its teardown problems; the test asserts them."""
     from .agentlab import AgentLab
 
     real = _checked_herdr()
@@ -163,9 +165,8 @@ def lab_factory(request):
         labs.append(lab)
         return lab
 
-    yield make
-    failures = []
-    for lab in reversed(labs):  # every lab is torn down whatever happened to the others
+    def finish(lab: AgentLab) -> list[str]:
+        failures = []
         try:
             try:
                 failures += [f"[{lab.name}] herdr call not scoped or refused: {c}" for c in lab.audit()]
@@ -175,7 +176,17 @@ def lab_factory(request):
             failures.append(f"[{lab.name}] teardown raised {e!r}")
         for note in lab.notes:
             print(f"[{lab.name}] {note}")
-        failures += [f"[{lab.name}] {p}" for p in getattr(lab, "problems", ["teardown did not finish"])]
+        return failures + [f"[{lab.name}] {p}" for p in getattr(lab, "problems", ["teardown did not finish"])]
+
+    def close(lab: AgentLab) -> list[str]:
+        labs.remove(lab)
+        return finish(lab)
+
+    make.close = close  # type: ignore[attr-defined]
+    yield make
+    failures = []
+    for lab in reversed(labs):  # every lab is torn down whatever happened to the others
+        failures += finish(lab)
     assert failures == [], "\n".join(failures)
 
 

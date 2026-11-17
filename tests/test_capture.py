@@ -510,7 +510,7 @@ def test_prefixed_line_right_above_the_footer_block_stays_in_the_reply():
 
 @pytest.mark.parametrize("tail", [
     "› Ask Codex to do anything\n\n  gpt default\n",  # an input line, no status line after it
-    f"› Ask Codex to do anything\n\n{CODEX_STATUS}\n  a\n  b\n  c\n",  # four non-blank lines after it
+    f"› Ask Codex to do anything\n\n{CODEX_STATUS}\n{CODEX_STATUS}\n{CODEX_STATUS}\n",  # three status-shaped lines after it
     f"  no input line at all\n\n{CODEX_STATUS}\n",
 ])
 def test_screen_without_a_recognized_footer_block(tail):
@@ -640,7 +640,9 @@ YES_NO = "  Allow this command?\n\n{first}1. Yes, proceed\n{last}2. No, tell Cod
     (SCREENS / "codex/model-picker-dialog.txt").read_text(),  # real, phase 8 (`/model`)
     YES_NO.format(first="› ", last="  "),  # selection on the first item
     YES_NO.format(first="  ", last="› "),  # selection on the last item
-    "  answer\n\n› Ask Codex to do anything\n\n" + CODEX_STATUS + "\n  one more line\n",  # two lines after it
+    "  answer\n\n› Ask Codex to do anything\n\n" + CODEX_STATUS + "\n" + CODEX_STATUS + "\n",  # two status lines
+    "  answer\n\n› Ask Codex to do anything\n\n",  # nothing after the input line (review T-1)
+    "  Pick one\n› 1. first option\n\n" + CODEX_STATUS + "\n",  # a numbered option, then a status line (T-5)
     "  answer\n\n› Ask Codex to do anything\n\n  gpt default   /tmp/repo\n",  # status without ` · `
     "  Pick one\n› 1. first · option\n  2. second\n",  # input line is a numbered option
     "  Choose · a model\n› gpt\n  enter select · esc back\n",  # key hints in the line after it
@@ -777,3 +779,86 @@ def test_codex_real_first_turn_in_a_directory_with_project_instructions(tmp_path
     assert len(users) == 2 and users[0].startswith("# AGENTS.md instructions") and "<environment_context>" in users[0]
     assert log.first_prompt(prompt_digest("Reply with exactly one word: PONG")) is True
     assert log.judge(0, prompt_digest("Reply with exactly one word: PONG")).text == "PONG"
+
+
+# ---- task 13.8: codex echoes of guided prompts (all start with the guide line) --------------------------
+
+GUIDED = "codex/guide-line-prefixes.txt"
+
+
+def test_codex_guided_prompts_on_a_real_screen():
+    """Task 13.8 sample: six guided prompts in a row, every echo starting with the same guide line. The
+    baseline before the last one picks out its reply; before it was delivered nothing is returned."""
+    screen = (SCREENS / GUIDED).read_text()
+    lines = screen.splitlines()
+    last = max(i for i, ln in enumerate(lines) if ln.startswith(f"› {K.GUIDE_LINE_TEXT}"))
+    foot = max(i for i, ln in enumerate(lines) if ln.startswith("› Ask Codex"))
+    before = "\n".join(lines[:last] + lines[foot:]) + "\n"
+    base = CODEX_CAP.baseline(before)
+    count = CODEX_CAP.count(before, base)
+    echo = [K.GUIDE_LINE_TEXT, "/status"]
+    assert CODEX_CAP.recognized(screen) and CODEX_CAP.extract(screen, base, echo, count=count) == "Ready."
+    assert CODEX_CAP.extract(before, base, echo, count=count) is None  # not delivered yet
+    assert not CODEX_CAP.echo_seen(before, base, echo, count=count)
+
+
+# ---- task 13.10: copilot notification turns and prompts (real samples, phase 11) ----------------------------
+
+NOTE_AB = "copilot/fullauto-notification-turn-and-prompt-timing.events.jsonl"
+NOTE_C = "copilot/fullauto-prompt-inside-multi-step-notification-turn.events.jsonl"
+LONG = ("Use the bash tool in sync mode (not async) to run the command `sleep 25`, wait until it finishes, then "
+        "reply with exactly the word LONGDONE.")
+
+
+def test_copilot_notification_during_this_turn_does_not_take_the_reply(tmp_path):
+    """Task 13.10 sample B: the completion notification of an earlier async command arrives while this
+    prompt's own turn runs (no checkpoint in between); the first checkpoint after the prompt still ends
+    this turn and its last final message is the reply."""
+    log = CopilotLog(str(copy(tmp_path, NOTE_AB)))
+    j = log.judge(0, prompt_digest(LONG))
+    assert (j.outcome, j.text) == (Outcome.REPLY, "LONGDONE")
+    entries = log.log.entries()
+    user = next(i for i, e in enumerate(entries) if e["data"].get("content") == LONG)
+    end = next(i for i in range(user, len(entries)) if entries[i]["type"] == "session.usage_checkpoint")
+    assert any(e["type"] == "system.notification" for e in entries[user:end])  # it did arrive inside
+
+
+@pytest.mark.parametrize("rel,prompt", [(NOTE_AB, "Reply with exactly the word QUEUEDA"),
+                                        (NOTE_C, "Reply with exactly the word QUEUEDC")])
+def test_copilot_prompt_taken_into_a_notification_turn_stays_ambiguous(tmp_path, rel, prompt):
+    """Task 13.10 samples A and C: a prompt submitted while a notification turn runs is recorded inside
+    that turn's loop (sample C: after an inner turn start, mid-loop), and one checkpoint closes both; the
+    last message may answer the prompt or continue the notification's work, so no text is returned."""
+    log = CopilotLog(str(copy(tmp_path, rel)))
+    assert log.judge(0, prompt_digest(prompt)).outcome is Outcome.AMBIGUOUS
+    entries = log.log.entries()
+    user = next(i for i, e in enumerate(entries) if e["data"].get("content") == prompt)
+    note = max(i for i in range(user) if entries[i]["type"] == "system.notification")
+    assert not any(e["type"] == "session.usage_checkpoint" for e in entries[note:user])
+
+
+# ---- task 13.3: copilot interrupted with ctrl+c (real sample, phase 11) -------------------------------------
+
+
+def test_copilot_ctrl_c_interrupt_is_an_abort(tmp_path):
+    """Real sample: ctrl+c during a synchronous `sleep 60` gives `assistant.turn_end`, `abort` and the
+    checkpoint; the turn is aborted, no turn is open afterwards, and the next prompt gets its reply."""
+    rel = "copilot/fullauto-ctrl-c-interrupt.events.jsonl"
+    log = CopilotLog(str(copy(tmp_path, rel)))
+    long = ("Use the bash tool in sync mode (not async) to run the command `sleep 60`, wait until it finishes, "
+            "then reply with exactly the word SLEPT.")
+    assert log.judge(0, prompt_digest(long)).outcome is Outcome.ABORTED
+    assert log.judge(0, prompt_digest("Reply with exactly the word AFTER")).text == "AFTER"
+    assert not log.turn_open()
+    cut = copy(tmp_path, rel, upto=next(i for i, ln in enumerate(lines(rel)) if '"abort"' in ln) + 1)
+    assert not CopilotLog(str(cut)).turn_open()  # `abort` already ends it, before the checkpoint is written
+
+
+def test_copilot_abort_after_a_message_is_still_an_abort(tmp_path):
+    """Text written before the interrupt is not this prompt's final reply (task 13.3)."""
+    p = tmp_path / "e.jsonl"
+    append_jsonl(p, {"type": "user.message", "timestamp": iso(), "data": {"content": "q"}},
+                 {"type": "assistant.message", "timestamp": iso(), "data": {"content": "half an answer", "toolRequests": []}},
+                 {"type": "abort", "timestamp": iso(), "data": {"reason": "user_initiated"}},
+                 {"type": "session.usage_checkpoint", "timestamp": iso(), "data": {}})
+    assert CopilotLog(str(p)).judge(0, prompt_digest("q")).outcome is Outcome.ABORTED

@@ -61,6 +61,10 @@ def test_codex_args():
     ro = args("codex", "read_only")
     assert ro[ro.index("--sandbox") + 1] == "read-only" and ro[ro.index("--ask-for-approval") + 1] == "never"
     assert "--dangerously-bypass-approvals-and-sandbox" not in ro
+    # task 13.5: user hooks off under read_only (`--disable hooks` = `-c features.hooks=false`)
+    assert ro[ro.index("--disable") + 1] == "hooks" and "--disable" not in args("codex", "full_auto")
+    assert K.adapter("codex").capability(K.IGNORE_USER_CONFIG).state == K.VERIFIED
+    assert K.adapter("copilot").capability(K.IGNORE_USER_CONFIG).state == K.UNSUPPORTED  # no start-up option
 
 
 def test_copilot_read_only_args():
@@ -140,7 +144,9 @@ def test_kinds_and_adapter_table_are_exactly_the_three_v1_kinds():
 def test_status_trust_and_keys():
     assert K.adapter("copilot").status_trusted is False
     assert all(K.adapter(k).status_trusted for k in ("codex", "claude"))
-    assert {K.adapter(k).interrupt_key for k in K.KINDS} == {"esc"}
+    # codex quits on an idle ctrl+c (D11); copilot ignores Esc during a turn and stops on ctrl+c (task 13.3)
+    assert {k: K.adapter(k).interrupt_key for k in K.KINDS} == {"codex": "esc", "claude": "esc", "copilot": "ctrl+c"}
+    assert all(K.adapter(k).capability(K.INTERRUPT_KEY).state == K.VERIFIED for k in K.KINDS)
 
 
 @pytest.mark.parametrize(

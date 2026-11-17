@@ -1959,6 +1959,8 @@ def test_long_feedback_to_a_copilot_coordinator_is_cut_and_the_discussion_goes_o
     feedback = coord(f).prompts[2]
     assert len(feedback.encode()) <= limit and sanitize_(feedback)
     assert "[truncated by polyagent" in feedback and tag(f, "protocol reminder") in feedback  # reminder kept
+    # phase-9 review C6: the closing instruction is not cut with the errors
+    assert "]\nOutput the corrected action.\n" + tag(f, "protocol reminder") in feedback
     bad_msg, = [m for m in rec.messages if m.type == "coordinator_output"]
     assert len(bad_msg.content["errors"]) == 20  # the record keeps every error
 
@@ -2003,6 +2005,26 @@ def test_a_template_that_does_not_fit_the_coordinator_is_refused_when_built(cloc
     with pytest.raises(InvalidConfigError, match="summary template does not fit a copilot coordinator"):
         make(f, tmp_path, coordinator=copilot(), template=tpl)
     make(f, tmp_path, template=tpl)  # claude: 64 KiB
+    assert f.started == 0
+
+
+def test_largest_template_with_a_copilot_coordinator_takes_three_participants_not_four(clock, tmp_path):
+    """Scenario: 大模板配多个参与者 (task 13.43) — a copilot coordinator with the largest valid template:
+    three participants can be configured, four are refused before any agent starts, the message saying
+    that each reply would not get the minimum length."""
+    from polyagent import DEFAULT_TEMPLATE
+
+    n = 16 * 1024
+    while SummaryTemplate(name="t", version=1, instructions="i" * n, schema=DEFAULT_TEMPLATE.schema).validate():
+        n -= 16
+    tpl = SummaryTemplate(name="t", version=1, instructions="i" * n, schema=DEFAULT_TEMPLATE.schema)
+    f = FakeFactory(clock)
+    make(f, tmp_path, names=("p1", "p2", "p3"), coordinator=copilot(), template=tpl)
+    with pytest.raises(InvalidConfigError) as ei:
+        make(f, tmp_path, names=("p1", "p2", "p3", "p4"), coordinator=copilot(), template=tpl)
+    msg = str(ei.value)
+    assert "4 participants are too many for a copilot coordinator" in msg
+    assert f"less than {PR.MIN_REPLY_SHARE_BYTES}" in msg and "each reply would get" in msg
     assert f.started == 0
 
 

@@ -7,7 +7,7 @@
 > - **单独启动的 agent 默认 `full_auto`。** agent 可以创建、修改、删除文件，执行任意命令，访问 web，调用全部已配置的 MCP 工具，并能读到注入给它的环境变量和 provider 凭据。自动信任目录之后，仓库自带的 hooks 和配置也会生效。库在这一档不做任何限制，prompt 里夹带的外部文本可以诱导模型做这些事。
 > - **建议**：以低权限的专用操作系统用户运行调用方服务和 herdr server；只注入必要的凭据；处理不受信任的仓库或外部输入时显式选择 `ToolPolicy.READ_ONLY`。
 > - **讨论成员固定 `read_only`**，不能改为 `full_auto`（指定了就在构造 `Discussion` 时报参数错误）。
-> - **`read_only` 的前提**：用户级 agent CLI 配置（hooks、插件、MCP、批准记录）和 shell 启动文件没有被篡改。同一操作系统用户下的 `full_auto` agent 能改写这些文件，此后启动的 `read_only` agent 和讨论成员会加载它们。**`full_auto` 的 agent 和只读讨论应分别用不同的操作系统用户运行**，至少为讨论使用专用用户。只换 herdr session 不起作用：session 隔离的是终端，不是用户的文件。
+> - **`read_only` 的前提**：用户级 agent CLI 配置（hooks、插件、MCP、批准记录）和 shell 启动文件没有被篡改。同一操作系统用户下的 `full_auto` agent 能改写这些文件，此后启动的 `read_only` agent 和讨论成员会加载它们。**`full_auto` 的 agent 和只读讨论应分别用不同的操作系统用户运行**，至少为讨论使用专用用户。只换 herdr session 不起作用：session 隔离的是终端，不是用户的文件。用户级 hooks：claude 的 `read_only`（`--restricted`）和 codex 的 `read_only`（`--disable hooks`）不执行它们；copilot 没有能在启动时关掉它们的参数，只能靠这条前提。
 
 ## 安装与准备
 
@@ -61,7 +61,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 各 kind 的差异：
 
 - **claude**：`read_only` 用 `--restricted` 启动，会连同用户 settings 里的登录一起忽略，所以要显式给出兼容端点、Bedrock 或 Vertex provider；官方登录在只读下暂不支持。两档下都不能用子 agent、工作流、定时与唤醒、后台监视、消息发送、任务管理、工作树切换、`Skill`、计划模式（`EnterPlanMode`、`ExitPlanMode`）和提问表单（`AskUserQuestion`）：这些工具会让回复与提问对不上，或停下等人。`read_only` 下用 `--tools Read,Grep,Glob` 只开放这三个内置工具（CLI 新版本新增的内置工具默认不可用，工具搜索也被关掉；claude 另会列出一个不能调用的占位定义），MCP 工具只开放白名单里的；`Edit`、`Write`、`NotebookEdit`、`Bash`、`WebFetch`、`WebSearch`、`DesignSync`、`ReportFindings` 另在禁用清单里作第二层。这些清单随 claude 的版本维护，升级后要重跑 `tests/integration/test_claude_tools.py`。目录信任对话框的应答和 `full_auto` 的确认会写入用户配置。库启动的 claude 两档都带关闭自我升级的环境变量（`DISABLE_AUTOUPDATER=1`，在创建终端时给出）：它只作用于库的终端，不改用户的配置和安装；用户自己运行 claude 时照常升级；只经由库运行 claude 的环境（例如专用服务用户）因此要手动升级；在 `AgentSpec.env` 里给同名变量可以改回。
-- **copilot**：一次 prompt 最多 20 KiB（UTF-8，含库加的引导行）：更长的粘贴会被 copilot 存成文件、消息里只剩文件引用，库收不到也确认不了这条 prompt，所以直接抛 `InvalidPromptError`；copilot 作协调者时，协调者的每次输入（首条输入、各轮结果、总结请求、校验反馈、中止提示）都控制在约 20 KiB 之内，它看到的参与者回复因此更短：默认模板、回复都很长时，总结阶段每条回复大约留下 1 个参与者 17 KB、2 个 8.7 KB、3 个 5.8 KB、5 个 3.5 KB、8 个 2.2 KB；需求加角色约 18 KiB；模板放不下或参与者多到每条回复分不到 1 KiB 时，构造 `Discussion` 就报参数错误（默认模板下最多约 15 个参与者）。参与者多或回复长的讨论建议用 claude 作协调者。`read_only` 下模型只看得到读文件、搜索和列目录三个工具，它只会在回复里写出命令而不执行。两档下都不能用子 agent 和工作流。`full_auto` 的 copilot 以后台方式启动的命令，结果不会作为回复返回：需要结果时在 prompt 里要求它同步执行。被中断之后（中断键待验证）不能再提问，需要关闭后重新启动。目录信任只在本次会话有效，不持久保存。
+- **copilot**：一次 prompt 最多 20 KiB（UTF-8，含库加的引导行）：更长的粘贴会被 copilot 存成文件、消息里只剩文件引用，库收不到也确认不了这条 prompt，所以直接抛 `InvalidPromptError`；copilot 作协调者时，协调者的每次输入（首条输入、各轮结果、总结请求、校验反馈、中止提示）都控制在约 20 KiB 之内，它看到的参与者回复因此更短：默认模板、回复都很长时，总结阶段每条回复大约留下 1 个参与者 17 KB、2 个 8.7 KB、3 个 5.8 KB、5 个 3.5 KB、8 个 2.2 KB；需求加角色约 18 KiB；模板放不下或参与者多到每条回复分不到 1 KiB 时，构造 `Discussion` 就报参数错误（默认模板下最多约 15 个参与者）。参与者多或回复长的讨论建议用 claude 作协调者。`read_only` 下模型只看得到读文件、搜索和列目录三个工具，它只会在回复里写出命令而不执行。两档下都不能用子 agent 和工作流。`full_auto` 的 copilot 以后台方式启动的命令，结果不会作为回复返回：需要结果时在 prompt 里要求它同步执行。copilot 的中断键是 `ctrl+c`（Esc 停不下正在执行的命令）；它在空闲的输入框上会进入退出确认，所以 `interrupt()` 只在会话日志显示有进行中的回合时才发送它。被中断的回合按中止处理，之后可以继续提问。目录信任只在本次会话有效，不持久保存。
 - **codex**：库带 `--no-daemon` 启动，不留后台服务进程；目录信任只对本次运行有效，不写配置。codex 在第一条消息提交之后才新建它的会话日志，库在提交之后再去找它，确认里面只有这一轮之后采用，所以回复（包括第一次提问的）取自会话日志；找不到可以采用的日志时这一轮退回屏幕截取，来源标为 `screen`。还没有会话日志时，提交之前屏幕底部不是空闲的输入区（例如停在选择对话框）的话，这次提问报“agent 忙碌”，什么都不提交。
 - **cursor**：v1 不支持。以 `cursor` 或 `cursor-agent` 为 kind 时，构造 `AgentSpec` 就抛 `InvalidConfigError`（不是 `PolicyNotSupportedError`，换一档策略也不行）。原因：它启动时会自动升级用户的安装、即使隔离了配置目录仍会写用户主目录，这两点在库里隔离不了；它的斜杠命令和多行 prompt 也防护不住。重新支持 cursor 在后续计划里。
 
@@ -100,7 +100,7 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 
 ## 提问
 
-- **prompt 的规则**（两档相同）：`\r\n` 归一为 `\n`；含换行和制表符以外的控制字符，或超过 100 KiB（copilot 是 20 KiB），抛 `InvalidPromptError`，什么都不发送。首个有效字符（跳过空白和不可见字符之后）是 `/ ! # @ $ ? -` 之一时，库按 kind 在前面加一行固定的引导行或一个前导空格，agent 收到的文本因此比调用方给的多出这一部分。codex 上以 `#`、`$`、`?` 开头的 prompt 被拒绝。`full_auto` 下这项防护保证的是文本交给模型，**不保证其中提到的操作不被执行**。
+- **prompt 的规则**（两档相同）：`\r\n` 归一为 `\n`；含换行和制表符以外的控制字符，或超过 100 KiB（copilot 是 20 KiB），抛 `InvalidPromptError`，什么都不发送。首个有效字符（跳过空白和不可见字符之后）是 `/ ! # @ $ ? -` 之一时，库在前面加一行固定的引导行，三种 kind 相同，agent 收到的文本因此比调用方给的多出这一部分。`full_auto` 下这项防护保证的是文本交给模型，**不保证其中提到的操作不被执行**。
 - `ask(text, timeout)` / `ask_reply(...)`：超时必须是有限正数，**建议不短于 30 秒**。更短的超时之后立即再次提问，可能得到“agent 忙碌”或“未找到回复”。同一 agent 的提问在线程、句柄和进程之间串行。
 - 超时抛 `AgentTimeoutError`，其 `pending` 可交给 `wait_reply(pending, timeout)` 继续等待同一轮的回复；`pending` 必须用在同一个 agent、同一个会话上。会话日志绑定的回合不带 prompt 文本；屏幕截取的回合带 prompt 首行的前 60 个字符（用来在屏幕上定位回显）。超时错误的诊断文本只有 herdr 报告的状态和规则名。
 - `cancel` 事件在 prompt 提交之前置位时什么都不发送，agent 正在进行的上一轮不受影响。
@@ -139,5 +139,6 @@ record = d.run("Add a cache in front of the user API", on_event=lambda e: save(e
 
 - 单元测试：`uv run pytest`（不需要 herdr，也不启动 agent）。
 - 集成测试：`POLYAGENT_INTEGRATION=1 uv run pytest -m integration`。它们使用随机命名的临时 herdr session，消耗各 agent 的模型额度（claude 的 provider 用例走本地桩，不耗额度）。
+  - copilot 冷启动的用例默认做 3 次，次数可用 `POLYAGENT_COLD_STARTS` 改；每次的实验室在下一次开始之前拆除。
   - 登录态是从用户配置**复制**到临时隔离目录的；某些 CLI 会在使用时轮换令牌，复制品里的令牌可能因此让用户的原登录失效或被刷新。
   - 测试进程被强杀后，下一次运行会在开始时报告遗留（带标记的进程、`/tmp/pa-it-*`、`polyagent-test-*` session）并中止，按提示手工处理：先结束进程，再 `herdr session stop <名字>` 与 `herdr session delete <名字>`，最后删除临时根。

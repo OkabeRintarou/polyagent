@@ -43,12 +43,7 @@ def sanitize(adapter: K.KindAdapter, text: object) -> str:
         why = f"unverified, task {task}" if task else "no guard works for it"
         raise InvalidPromptError(f"{adapter.kind} cannot safely receive a prompt starting with {first!r} ({why})")
     if first in guard.applies_to:
-        if guard.method == K.GUIDE_LINE:
-            text = f"{K.GUIDE_LINE_TEXT}\n{text}"
-        elif guard.method == K.LEADING_SPACE:
-            text = " " + text
-        else:  # pragma: no cover - table invariant
-            raise AssertionError(guard.method)
+        text = f"{K.GUIDE_LINE_TEXT}\n{text}"
     limit = max_bytes(adapter)
     if len(text.encode("utf-8")) > limit:
         why = "" if guard.max_bytes is None else f"; {adapter.kind} does not take a longer prompt as message text"
@@ -64,6 +59,4 @@ def max_bytes(adapter: K.KindAdapter) -> int:
 
 def max_text_bytes(adapter: K.KindAdapter) -> int:
     """The largest text that fits :func:`max_bytes` whatever guard it gets."""
-    guard = adapter.prompt_guard
-    reserve = len(K.GUIDE_LINE_TEXT.encode("utf-8")) + 1 if guard.method == K.GUIDE_LINE else 1
-    return max_bytes(adapter) - reserve
+    return max_bytes(adapter) - len(K.GUIDE_LINE_TEXT.encode("utf-8")) - 1

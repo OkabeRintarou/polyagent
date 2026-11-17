@@ -1,0 +1,22 @@
+{"type": "user.message", "timestamp": "2026-11-17T07:15:28.200Z", "data": {"content": "Reply with exactly one word: PONG"}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:15:28.212Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:15:30.041Z", "data": {"content": "PONG", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:15:30.042Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:15:30.044Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:15:30.532Z", "data": {"content": "Use the bash tool in sync mode (not async) to run the command `sleep 60`, wait until it finishes, then reply with exactly the word SLEPT."}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:15:30.534Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:15:33.063Z", "data": {"content": "", "toolRequests": [{"name": "bash"}]}}
+{"type": "tool.execution_start", "timestamp": "2026-11-17T07:15:33.064Z", "data": {"toolName": "bash"}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:15:36.321Z", "data": {}}
+{"type": "abort", "timestamp": "2026-11-17T07:15:36.322Z", "data": {"reason": "user_initiated"}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:15:36.344Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:15:45.183Z", "data": {"content": "Reply with exactly the word AFTER"}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:15:45.185Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:15:46.710Z", "data": {"content": "AFTER", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:15:46.710Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:15:46.715Z", "data": {}}
+{"type": "user.message", "timestamp": "2026-11-17T07:15:50.265Z", "data": {"content": "Reply with exactly the word AFTER2"}}
+{"type": "assistant.turn_start", "timestamp": "2026-11-17T07:15:50.267Z", "data": {}}
+{"type": "assistant.message", "timestamp": "2026-11-17T07:15:51.502Z", "data": {"content": "AFTER2", "toolRequests": []}}
+{"type": "assistant.turn_end", "timestamp": "2026-11-17T07:15:51.502Z", "data": {}}
+{"type": "session.usage_checkpoint", "timestamp": "2026-11-17T07:15:51.517Z", "data": {}}

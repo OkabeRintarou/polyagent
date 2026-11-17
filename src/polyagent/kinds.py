@@ -74,8 +74,6 @@ def _dialog(name: str, category: str, *phrases: str, keys: tuple[str, ...] | Non
 
 # ---- prompt guards (D10) -----------------------------------------------------------
 
-GUIDE_LINE = "guide_line"
-LEADING_SPACE = "leading_space"
 GUIDE_LINE_TEXT = "Message from the user follows:"
 GUARDED_PREFIXES = frozenset("/!#@$?-")
 # copilot 1.0.112 keeps a paste of more than 20 KiB (UTF-8) out of the message: it is saved to a file
@@ -85,7 +83,10 @@ COPILOT_PASTE_LIMIT = 20 * 1024
 
 @dataclass(frozen=True)
 class PromptGuard:
-    method: str  # GUIDE_LINE | LEADING_SPACE
+    """D10: a prompt whose first effective character is in ``applies_to`` gets the fixed guide line
+    (``GUIDE_LINE_TEXT``) in front of it. Task 13.8: the guide line works on all three v1 kinds; codex's
+    earlier leading space and its refused prefixes are gone."""
+
     applies_to: frozenset[str]  # first non-blank characters that get the guard
     # First non-blank characters refused outright -> the task that could lift the refusal, or None
     # when no guard works (verified).
@@ -314,7 +315,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("bypass_permissions", FULL_AUTO_CONFIRM, "running in Bypass Permissions mode",
                     "No, exit", "Yes, I accept", keys=("down", "enter"), persisted=True),
         ),
-        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}),
+        prompt_guard=PromptGuard(GUARDED_PREFIXES, {}),
         status_trusted=True,
         deny_key="esc",
         interrupt_key="esc",
@@ -344,7 +345,10 @@ ADAPTERS: dict[str, KindAdapter] = {
             READ_ONLY: Capability(VERIFIED, note="tool allow-list view,grep,glob plus deny rules (task 13.1)"),
             MCP_ALLOW: Capability(UNVERIFIED, task="13.3", note="third-party MCP disabled by the account's org policy"),
             LOG_ADAPTER: Capability(VERIFIED),
-            INTERRUPT_KEY: Capability(UNVERIFIED, task="13.3"),
+            # Task 13.3 (copilot 1.0.112): ctrl+c ends the running turn (log: `abort`, then the checkpoint); Esc
+            # does not. On an idle prompt the first ctrl+c only arms the exit confirmation, a second one quits,
+            # so interrupt() sends it only while the log shows an open turn.
+            INTERRUPT_KEY: Capability(VERIFIED, note="ctrl+c"),
             SCREEN_CAPTURE: Capability(UNSUPPORTED, note="samples show the echo with the input line's prefix; no footer rule (D12)"),
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="the tool allow-list has no background tool (task 13.1)"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(
@@ -352,7 +356,8 @@ ADAPTERS: dict[str, KindAdapter] = {
                 note="sub-agent and workflow tools excluded (task 13.1); bash mode=async cannot be excluded and is a "
                      "known residual: its result arrives in a later notification turn (timing samples: task 13.10)",
             ),
-            IGNORE_USER_CONFIG: Capability(UNVERIFIED, task="13.5"),
+            IGNORE_USER_CONFIG: Capability(UNSUPPORTED, note="no start-up option; user hooks are off only through the "
+                                                             "disableAllHooks setting (task 13.5)"),
         },
         config_dir_var="COPILOT_HOME",
         default_config_dir=".copilot",
@@ -372,12 +377,12 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("trust", TRUST, "Confirm folder trust", "Do you trust the files in this folder?", "1. Yes",
                     "2. Yes, and remember this folder", "3. No", keys=("enter",), persisted=False),
         ),
-        prompt_guard=PromptGuard(GUIDE_LINE, GUARDED_PREFIXES, {}, max_bytes=COPILOT_PASTE_LIMIT),
+        prompt_guard=PromptGuard(GUARDED_PREFIXES, {}, max_bytes=COPILOT_PASTE_LIMIT),
         status_trusted=False,
         # Its input box: a `❯` line between two rules, all at column 0 (dialog boxes are drawn with `│`).
         ready_screen=re.compile(r"(?m)^─{20,}[ \t]*\n❯[^\n]*\n─{20,}[ \t]*$"),
         deny_key="esc",
-        interrupt_key="esc",
+        interrupt_key="ctrl+c",
         log_binding="session_id",
         secret_env_flag="--secret-env-vars",
     ),
@@ -394,6 +399,9 @@ ADAPTERS: dict[str, KindAdapter] = {
         read_only_args=(
             "--no-daemon", "--no-alt-screen", "--sandbox", "read-only", "--ask-for-approval", "never",
             "-c", "mcp_servers={}",
+            # Task 13.5 (codex 0.167): no hook runs, whatever the user's hooks.json, inline [hooks] tables or
+            # `[features] hooks = true` say. Other user settings still load (D8 trust boundary).
+            "--disable", "hooks",
         ),
         full_auto_args=("--no-daemon", "--no-alt-screen", "--dangerously-bypass-approvals-and-sandbox"),
         read_only_lists=(),
@@ -407,7 +415,7 @@ ADAPTERS: dict[str, KindAdapter] = {
             SCREEN_CAPTURE: Capability(VERIFIED),
             TURN_ATTRIBUTION_READ_ONLY: Capability(VERIFIED, note="no asynchronous tools"),
             TURN_ATTRIBUTION_FULL_AUTO: Capability(VERIFIED, note="no asynchronous tools"),
-            IGNORE_USER_CONFIG: Capability(UNVERIFIED, task="13.5"),
+            IGNORE_USER_CONFIG: Capability(VERIFIED, note="--disable hooks: user hooks only (task 13.5)"),
         },
         config_dir_var="CODEX_HOME",
         default_config_dir=".codex",
@@ -421,15 +429,18 @@ ADAPTERS: dict[str, KindAdapter] = {
             _dialog("trust", TRUST, "Trust this folder?", "Your trust decision will be saved",
                     "1. Trust and continue", keys=None, persisted=True),
         ),
-        prompt_guard=PromptGuard(LEADING_SPACE, GUARDED_PREFIXES - {"#", "$", "?"}, dict.fromkeys("#$?", "13.8")),
+        # Task 13.8 (codex 0.167): the guide line keeps `/`, `!`, `@`, `-`, `#`, `$` and `?` on its second line
+        # part of one message to the model; nothing runs locally (tests/fixtures/screens/codex).
+        prompt_guard=PromptGuard(GUARDED_PREFIXES, {}),
         status_trusted=True,
         deny_key=None,
         interrupt_key="esc",
         log_binding="rollout_fd",
         # codex shows submitted prompts in the transcript as `› <prompt>` too (phase-2 screen, phase-7
-        # finding), and its selection dialogs mark the chosen option with `›`. D12 (task 13.31): the last `›` line,
-        # not a numbered option, followed by exactly one non-blank line: the status line, with ` · `
-        # separated fields and no `enter`/`esc` key hint.
+        # finding), and its selection dialogs mark the chosen option with `›`. D12 (tasks 13.31, 13.37): the
+        # last line starting with `›`, not a numbered option, followed by exactly one non-blank line, the
+        # status line, judged by its fields (`codex_status_line`): at least two ` · ` separated fields, the
+        # first without a standalone `enter`/`esc`, the second a directory.
         footer_block=FooterBlock(re.compile(r"^›(?: |\s*$)"), max_after=1,
                                  min_after=1, input_exclude=re.compile(r"^›\s*\d+\."),
                                  status_line=codex_status_line),

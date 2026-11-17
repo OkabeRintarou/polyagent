@@ -623,7 +623,8 @@ class _Run:
             self.add(sender=COORDINATOR, receiver=None, type_=MessageType.COORDINATOR_OUTPUT,
                      content={"output": reply_text, "errors": list(outcome.errors)}, status=MessageStatus.INVALID,
                      source=reply.source, started_at=started, duration=duration)
-            text = PR.within_budget(self.text.feedback(outcome.errors), self.reminder(allowed), self.d._budget)
+            text = PR.within_budget(self.text.feedback(outcome.errors, tail=False),
+                                    "\n" + PR.FEEDBACK_TAIL + self.reminder(allowed), self.d._budget)
         return _INVALID
 
     def check_brief(self, action: PR.Action) -> PR.Outcome:

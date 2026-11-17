@@ -496,13 +496,40 @@ def test_interrupt_after_timeout(tmp_path):
     assert agent.status() == "idle"
 
 
-def test_unverified_interrupt_key_waits_bounded_and_is_not_resent(tmp_path):
+def test_copilot_interrupt_without_an_end_marker_waits_bounded_and_is_not_resent(tmp_path):
     c, agent, path = make(tmp_path, kind="copilot")
-    assert K.adapter("copilot").capability(K.INTERRUPT_KEY).state == K.UNVERIFIED
     copilot_user(path, "long task")
     with pytest.raises(AgentTimeoutError):
         agent.interrupt()
-    assert len(c.args_of("agent_send_keys")) == 1
+    assert [k for _, *k in c.args_of("agent_send_keys")] == [["ctrl+c"]]
+
+
+def test_copilot_interrupt_is_ctrl_c_and_ends_the_turn(tmp_path):
+    """Task 13.3 (copilot 1.0.112): ctrl+c ends the running turn; the log gets `abort` and the checkpoint,
+    the turn counts as aborted and the next prompt is submitted."""
+    c, agent, path = make(tmp_path, kind="copilot")
+    assert K.adapter("copilot").capability(K.INTERRUPT_KEY).state == K.VERIFIED
+    copilot_user(path, "long task")
+    c.on_keys = lambda fake, name, keys: append_jsonl(
+        path, {"type": "assistant.turn_end", "timestamp": iso(), "data": {}},
+        {"type": "abort", "timestamp": iso(), "data": {"reason": "user_initiated"}},
+        {"type": "session.usage_checkpoint", "timestamp": iso(), "data": {}})
+    agent.interrupt()
+    assert [k for _, *k in c.args_of("agent_send_keys")] == [["ctrl+c"]]
+    c.on_prompt = answer_copilot(path, "next answer")
+    assert agent.ask("next", 5) == "next answer"
+
+
+def test_copilot_interrupt_sends_nothing_while_no_turn_runs(tmp_path):
+    """Task 13.3: on an idle prompt copilot's first ctrl+c arms its exit confirmation and a second one
+    quits, so interrupt() does not send it when the log shows no open turn (or there is no log yet)."""
+    c, agent, path = make(tmp_path, kind="copilot")
+    agent.interrupt()  # no log file: nothing was ever submitted
+    copilot_user(path, "q")
+    copilot_end(path, "a")
+    agent.interrupt()
+    agent.interrupt()
+    assert c.args_of("agent_send_keys") == []
 
 
 def test_cancel_interrupts_and_raises(tmp_path):
@@ -844,7 +871,8 @@ def test_screen_delivery_evidence_is_the_echo(tmp_path):
 
 
 def test_copilot_after_an_interrupt_without_an_end_marker_stays_busy(tmp_path):
-    """D11 known degradation until task 13.3: no end marker after the interrupt, so no prompt is submitted."""
+    """D11: no end marker after the interrupt (the log never shows the turn ending), so no prompt is
+    submitted; with copilot's ctrl+c (task 13.3) the real log does get one."""
     c, agent, path = make(tmp_path, kind="copilot")
     copilot_user(path, "long task")
     with pytest.raises(AgentTimeoutError):
@@ -1477,8 +1505,9 @@ def test_codex_messages_of_its_own_before_the_prompt_still_adopt(tmp_path, monke
     json.dumps({"type": "response_item", "payload": {"type": "message", "role": "assistant",
                                                       "content": [{"type": "output_text", "text": "OLD"}]}}) + "\n",
     _codex_event("item_completed", item={"type": "AgentMessage", "content": [{"type": "Text", "text": "OLD"}]}),
+    _codex_event("agent_message", message="OLD"),
     _codex_event("task_started", turn_id="second"),
-], ids=["task_complete", "turn_aborted", "assistant", "agent_message_item", "second_turn_start"])
+], ids=["task_complete", "turn_aborted", "assistant", "agent_message_item", "agent_message_event", "second_turn_start"])
 def test_codex_rollout_with_a_turn_before_the_prompt_is_not_adopted(tmp_path, monkeypatch, marker):
     """Scenario: 提交之后出现的日志里已有别的回合 — an ended or answered turn, or a second turn start."""
     c, agent, seen = _codex(tmp_path, monkeypatch, _before_prompt(marker))
@@ -1517,3 +1546,14 @@ def test_codex_real_first_turn_with_project_instructions_is_adopted(tmp_path, mo
     c, agent, seen = _codex(tmp_path, monkeypatch, rel.read_text().splitlines(keepends=True))
     r = agent.ask_reply(PONG_PROMPT, 5)
     assert (r.text, r.source) == ("PONG", "session_log")
+
+
+def test_codex_rollout_that_never_holds_the_prompt_stays_with_the_screen(tmp_path, monkeypatch):
+    """Phase-10 review T-4: a rollout appears after submitting but this prompt's digest never shows up in it
+    (another session's file, a prompt that was not delivered): no verdict is ever reached, the turn is
+    read from the screen and the file is not bound."""
+    first = _sample(1)
+    i = next(i for i, ln in enumerate(first) if PONG_PROMPT in ln and '"role": "user"' in ln)
+    c, agent, seen = _codex(tmp_path, monkeypatch, first[:i])  # turn start and codex's own message only
+    r = agent.ask_reply(PONG_PROMPT, 5)
+    assert (r.text, r.source) == ("SCREEN REPLY", "screen") and agent._log_path is None

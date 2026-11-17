@@ -143,3 +143,31 @@ def test_copilot_full_auto_background_command(agent_lab):
     assert "STARTED" in first
     second = agent.ask("Reply with exactly one word: SECOND", 300)
     assert "SECOND" in second and "STARTED" not in second
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+def test_codex_disable_hooks_stops_user_hooks(agent_lab, disabled):
+    """Task 13.5: codex's `--disable hooks` (in its read_only arguments) runs no user hook, from `hooks.json`
+    or inline in config.toml, even with `[features] hooks = true` there (as in a real user config); the
+    control run without it does run them. Hook trust is bypassed for this run so that only the feature
+    decides. Run under full_auto: codex's read_only itself is unverified (task 13.4)."""
+    import time
+
+    require_kind("codex")
+    assert K.adapter("codex").read_only_args[-2:] == ("--disable", "hooks")
+    agent_lab.prepare("codex")
+    cwd = agent_lab.work("hooks")
+    m_json, m_toml = cwd / "hook-json.txt", cwd / "hook-toml.txt"
+    home = agent_lab.homes["CODEX_HOME"]
+    (home / "hooks.json").write_text(json.dumps({"hooks": {"UserPromptSubmit": [
+        {"hooks": [{"type": "command", "command": f"touch {m_json}"}]}]}}))
+    cfg = home / "config.toml"
+    head, sep, rest = cfg.read_text().partition("[")  # top-level keys first, then the tables
+    cfg.write_text(head + "[features]\nhooks = true\n\n[[hooks.UserPromptSubmit]]\n\n[[hooks.UserPromptSubmit.hooks]]\n"
+                   f"type = \"command\"\ncommand = \"touch {m_toml}\"\n\n" + sep + rest)
+    extra = ["--dangerously-bypass-hook-trust"] + (["--disable", "hooks"] if disabled else [])
+    agent = agent_lab.start("codex", cwd, extra_args=extra)
+    assert "PONG" in agent.ask("Reply with exactly one word: PONG", 180)
+    time.sleep(2)
+    agent.close()
+    assert (m_json.exists(), m_toml.exists()) == (not disabled, not disabled)

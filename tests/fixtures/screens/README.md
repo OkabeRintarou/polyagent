@@ -22,3 +22,4 @@
 | `codex/phase2-echo-prefix-reconnecting.txt` | 阶段 2 的真实屏幕（13.31 入库，去掉了环境信息和命令行）：回显 `› Reply with exactly PONG.` 带输入行前缀；网络失败，没有回复；输入行之后只有一条状态行 | — |
 | `codex/model-picker-dialog.txt` | 阶段 8（13.31）：`/model` 打开的选择对话框。光标行 `› 4. …` 是编号选项，最后一行是按键提示 `enter select · esc back`；按 D12 的四个条件不被认作输入区，Esc 之后屏幕回到可识别的输入区 | Esc 关闭 |
 | `codex/status-{home,spaces,long,enter-title}-after-first-turn.txt` | 阶段 9（13.37 的“完成后”）：真实 codex 第一轮之后的屏幕。状态行第二段：pane 的 `HOME` 指到临时目录、工作目录在它下面时是 `~/proj`；带空格的目录原样显示；223 个字符的目录被按 pane 宽度截断，整行以 `…` 结尾；普通目录原样显示；会话标题取自第一轮，要过一会儿才画出来，`enter-title` 那份的标题是 `Handle enter key`。四份都按 D12 的四条认出 | — |
+| `codex/guide-line-prefixes.txt` | 任务 13.8（阶段 11，codex 0.167，full_auto）：引导行之后第二行分别是 `?`、`!touch`（加“不要执行命令”）、`/exit`、`@data.txt`、`-v`、`/status`，六条都作为一条消息交给模型并得到回复，没有本地执行（工作目录里没有生成文件，日志里没有命令执行），`/exit`、`/status` 没有生效。同一次运行里，单行原样的 `#`、`$`、`?` 开头和前导空格加这三种字符开头的 prompt 也都原样交给了模型（codex 去掉了前导空格）。回显都以引导行开头；模型名替换为 `<model>` | — |

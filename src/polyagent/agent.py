@@ -146,15 +146,40 @@ def drop_submission(session: str, name: str) -> None:
         locks.submission_path(session, name).unlink()
 
 
-def drop_stale_submissions(session: str) -> None:
-    """Remove submission records older than ``CONFIRM_LIMIT``, each under its name's lock taken without
-    waiting; a held lock means an ask may have just written that record, so it is left (D11)."""
+SUBMISSION_TMP_SUFFIX = ".tmp"
+
+
+def store_submission(path: Path, record: dict[str, Any]) -> None:
+    """Write a D11 record: 0600, through a temporary file that replaces ``path`` atomically. On error the
+    temporary file is removed and the ``OSError`` raised."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}{SUBMISSION_TMP_SUFFIX}")
     try:
-        files = list((locks.lock_dir(session) / locks.AGENT_LOCK_DIR).glob("*" + locks.SUBMISSION_SUFFIX))
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(fd, json.dumps(record).encode())
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+
+
+def drop_stale_submissions(session: str) -> None:
+    """``cleanup()``'s part of D11, each name under its lock taken without waiting (a held lock means an
+    ask may be writing that record right now, so it is left): records older than ``CONFIRM_LIMIT`` are
+    removed; a record dated in the future (the clock was set back) is rewritten to now, so that it ages
+    from here; temporary files of a write that crashed are removed once older than ``CONFIRM_LIMIT``
+    (phase-9 review C4)."""
+    try:
+        d = locks.lock_dir(session) / locks.AGENT_LOCK_DIR
+        files = list(d.glob("*" + locks.SUBMISSION_SUFFIX))
+        temps = list(d.glob("*" + locks.SUBMISSION_SUFFIX + ".*" + SUBMISSION_TMP_SUFFIX))
     except (OSError, InvalidConfigError):
         return
-    for f in files:
-        name = f.name[: -len(locks.SUBMISSION_SUFFIX)]
+    for f in files + temps:
+        name = f.name.split(locks.SUBMISSION_SUFFIX, 1)[0]
         try:
             lock = locks.try_lock(session, name)
         except InvalidConfigError:
@@ -162,10 +187,22 @@ def drop_stale_submissions(session: str) -> None:
         if lock is None:
             continue
         with lock:
+            now = time.time()
+            if f in temps:
+                with contextlib.suppress(OSError):
+                    if now - f.lstat().st_mtime >= CONFIRM_LIMIT:
+                        f.unlink()
+                continue
             rec = load_submission(f)
-            if rec is not None and time.time() - rec["at"] >= CONFIRM_LIMIT:
+            if rec is None:
+                continue
+            if rec["at"] > now:
+                with contextlib.suppress(OSError):
+                    store_submission(f, {**rec, "at": now})
+            elif now - rec["at"] >= CONFIRM_LIMIT:
                 with contextlib.suppress(OSError):
                     f.unlink()
+
 
 class Agent:
     """Handle of one agent started by polyagent (``PolyAgent.start`` / ``attach``)."""
@@ -470,20 +507,9 @@ class Agent:
         before submission and the wall-clock time; never the prompt text. 0600, replaced atomically.
         A failed write means nothing was submitted: ``AgentBusyError``, no temporary file left (D11)."""
         record = {"v": 1, "digest": digest, "mark": mark, "at": time.time()}
-        tmp = None
         try:
-            path = self._submission_file()
-            tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-            try:
-                os.write(fd, json.dumps(record).encode())
-            finally:
-                os.close(fd)
-            os.replace(tmp, path)
+            store_submission(self._submission_file(), record)
         except (OSError, InvalidConfigError) as e:
-            if tmp is not None:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp)
             raise AgentBusyError(f"could not write the submission record of agent {self.name} "
                                  f"({type(e).__name__}); nothing was submitted") from None
         return record
@@ -800,8 +826,15 @@ class Agent:
     # ---- interrupt / dismiss ------------------------------------------------------
 
     def interrupt(self) -> None:
-        """Send the kind's interrupt key and wait (bounded) for the turn to end; the key is never resent."""
+        """Send the kind's interrupt key and wait (bounded) for the turn to end; the key is never resent.
+        Where herdr's status is not trusted (copilot) the key is sent only while the session log shows an
+        open turn: copilot's ctrl+c on an idle prompt arms its exit confirmation (task 13.3)."""
         self._check_open()
+        logsrc = None
+        if not self._adapter.status_trusted:
+            logsrc = self._bind_log()
+            if logsrc is None or not logsrc.exists() or not logsrc.turn_open():
+                return  # nothing is running
         self._call(self._h.agent_send_keys, self.name, self._adapter.interrupt_key)
         deadline = time.monotonic() + INTERRUPT_WAIT
         if self._adapter.status_trusted:
@@ -812,7 +845,6 @@ class Agent:
                 if e.code != H.TIMEOUT:
                     raise
         else:
-            logsrc = self._bind_log()
             while logsrc is not None and time.monotonic() < deadline:
                 if not logsrc.turn_open():
                     return

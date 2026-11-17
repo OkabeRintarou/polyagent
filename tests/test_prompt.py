@@ -69,7 +69,7 @@ def test_prompt_starting_with_a_dash(kind, policy, lock_home):
     out = submitted(kind, policy, "-v please", lock_home)
     assert out is not None and not out.startswith("-")
     assert out.endswith("-v please")
-    assert out in (" -v please", f"{K.GUIDE_LINE_TEXT}\n-v please")
+    assert out == f"{K.GUIDE_LINE_TEXT}\n-v please"
 
 
 @pytest.mark.parametrize("policy", POLICIES)
@@ -87,10 +87,23 @@ def test_copilot_leading_blanks_get_the_guide_line():
 
 
 @pytest.mark.parametrize("policy", POLICIES)
-@pytest.mark.parametrize("kind,text", [("codex", "#note"), ("codex", "  #note"), ("codex", "$x"), ("codex", "?")])
-def test_unguardable_prefix_is_refused(kind, policy, text, lock_home):
-    """Scenario: 无法防护的前缀."""
-    assert submitted(kind, policy, text, lock_home) is None
+@pytest.mark.parametrize("text", ["#note", "  #note", "$x", "?", "/exit", "!touch x", "@file", "-v"])
+def test_codex_gets_the_guide_line_for_every_prefix(policy, text, lock_home):
+    """Task 13.8 (codex 0.167): the guide line keeps every guarded prefix on its second line, so codex
+    takes the whole text as one message; `#`, `$` and `?` are no longer refused."""
+    assert submitted("codex", policy, text, lock_home) == f"{K.GUIDE_LINE_TEXT}\n{text}"
+
+
+@pytest.mark.parametrize("policy", POLICIES)
+def test_unguardable_prefix_is_refused(policy, lock_home, monkeypatch):
+    """Scenario: 无法防护的前缀 — no v1 kind refuses a prefix any more (task 13.8), so a refusal is put on
+    an adapter here: nothing reaches the agent."""
+    import dataclasses
+
+    a = K.adapter("codex")
+    guard = dataclasses.replace(a.prompt_guard, rejected={"#": "13.0"})
+    monkeypatch.setitem(K.ADAPTERS, "codex", dataclasses.replace(a, prompt_guard=guard))
+    assert submitted("codex", policy, "#note", lock_home) is None
 
 
 @pytest.mark.parametrize("policy", POLICIES)
@@ -155,22 +168,13 @@ def test_sanitising_does_not_depend_on_the_policy(kind):
 INVISIBLE = ["\ufeff", "\u200b", "\u2060", "\u200e", "\u00a0", "\u3000", "\u2028", " \ufeff "]
 
 
-@pytest.mark.parametrize("kind", ["copilot", "claude"])
+@pytest.mark.parametrize("kind", K.KINDS)
 @pytest.mark.parametrize("lead", INVISIBLE)
 @pytest.mark.parametrize("prefix", ["!touch pwned", "/exit", "#remember", "-v"])
 def test_invisible_characters_do_not_hide_a_prefix(kind, lead, prefix):
     """A BOM (U+FEFF) is whitespace for JavaScript's trim(); so are other format/separator characters."""
     out = PR.sanitize(K.adapter(kind), lead + prefix)
     assert out == f"{K.GUIDE_LINE_TEXT}\n{lead}{prefix}"
-
-
-@pytest.mark.parametrize("kind", ["codex"])
-@pytest.mark.parametrize("lead", INVISIBLE)
-def test_leading_space_kinds_guard_a_prefix_after_invisible_characters(kind, lead):
-    """D10 step 3: the first effective character decides; the kind's own rule then applies (guard or refuse)."""
-    assert PR.sanitize(K.adapter(kind), lead + "!touch pwned") == f" {lead}!touch pwned"
-    with pytest.raises(InvalidPromptError):
-        PR.sanitize(K.adapter(kind), lead + "#x")
 
 
 @pytest.mark.parametrize("ch", ["\ufeff", "\u200b", "\u2060", "\u200e", "\u202e", "\u00a0", "\u2003", "\u2028",
@@ -195,3 +199,14 @@ def test_invisible_characters_before_plain_text_are_kept(kind):
 def test_only_invisible_characters_is_empty(kind):
     with pytest.raises(InvalidPromptError):
         PR.sanitize(K.adapter(kind), "\ufeff\u200b\u00a0")
+
+
+def test_prefix_without_any_guard_is_refused_with_its_reason(monkeypatch):
+    """Phase-10 review C-1: a refused prefix with no task (``None``: verified that no guard works) says so;
+    no v1 kind has one, so it is put on an adapter here."""
+    import dataclasses
+
+    a = K.adapter("codex")
+    guard = dataclasses.replace(a.prompt_guard, rejected={**a.prompt_guard.rejected, "/": None})
+    with pytest.raises(InvalidPromptError, match="no guard works for it"):
+        PR.sanitize(dataclasses.replace(a, prompt_guard=guard), "/quit")

@@ -4,6 +4,7 @@ replaced by the in-memory ``FakeClient``."""
 
 import os
 import re
+import stat
 import threading
 from pathlib import Path
 
@@ -387,9 +388,22 @@ def test_copilot_never_showing_its_input_box_is_a_start_timeout(pa, client, tmp_
 
     monkeypatch.setattr(L, "DIALOG_WAIT_MS", 200)
     client.screens = ["Copilot v1.0.112\n"]
-    with pytest.raises(AgentTimeoutError, match="input area"):
+    with pytest.raises(AgentTimeoutError, match="did not show its input area"):
         pa.start(AgentSpec(kind="copilot"), tmp_path)
     assert client.workspaces == {}
+
+
+def test_copilot_input_box_shown_but_never_idle_names_the_state(pa, client, tmp_path, launch_clock):
+    """Phase-9 review C3 (D9: input area and idle/done are both needed): the input box is on screen but
+    herdr keeps reporting `working`; the timeout says so instead of "did not show its input area"."""
+    reads = iter(["Copilot v1.0.112\n"])
+    client._visible = lambda: next(reads, None) or READY_SCREEN
+    client.statuses["c2"] = ["idle", "working"]
+    with pytest.raises(AgentTimeoutError) as ei:
+        pa.start(AgentSpec(kind="copilot"), tmp_path, name="c2")
+    msg = str(ei.value)
+    assert "showed its input area" in msg and "did not return to idle or done" in msg and "working" in msg
+    assert "did not show its input area" not in msg and client.workspaces == {}
 
 
 def test_caller_disabled_auto_trust(pa, client, tmp_path):
@@ -787,3 +801,40 @@ def test_cleanup_drops_expired_records_only_under_their_lock(pa, client):
         held.release()
     assert not locks.submission_path(pa.session, "old").exists()
     assert locks.submission_path(pa.session, "fresh").exists() and locks.submission_path(pa.session, "busy").exists()
+
+
+def test_cleanup_rewrites_a_record_dated_in_the_future_to_now(pa, client):
+    """Phase-9 review C4 (D11): a record from a clock set back would never expire in cleanup(); it is
+    rewritten to the current time, keeps its digest and mark, and then ages like any other."""
+    import json as _json
+    import time as _time
+
+    _record(pa.session, "future", _time.time() + 3600)
+    before = _json.loads(locks.submission_path(pa.session, "future").read_text())
+    pa.cleanup()
+    after = _json.loads(locks.submission_path(pa.session, "future").read_text())
+    assert after["at"] <= _time.time() and {k: after[k] for k in ("digest", "mark")} == {
+        k: before[k] for k in ("digest", "mark")}
+    assert stat.S_IMODE(os.stat(locks.submission_path(pa.session, "future")).st_mode) == 0o600
+
+
+def test_cleanup_removes_temporary_files_of_a_crashed_write(pa, client):
+    """Phase-9 review C4: `<name>.submitted.<pid>.<tid>.tmp` left by a crash is removed once older than the
+    confirmation limit; one just written (an ask may be writing it) stays, as does one under a held lock."""
+    import time as _time
+
+    path = locks.submission_path(pa.session, "crashed")
+    old = path.with_name(path.name + ".111.222.tmp")
+    new = path.with_name(path.name + ".333.444.tmp")
+    busy = locks.submission_path(pa.session, "busy").with_name("busy.submitted.555.666.tmp")
+    for p in (old, new, busy):
+        p.write_text("{")
+    stale = _time.time() - 3600
+    os.utime(old, (stale, stale))
+    os.utime(busy, (stale, stale))
+    held = locks.try_lock(pa.session, "busy")
+    try:
+        pa.cleanup()
+    finally:
+        held.release()
+    assert not old.exists() and new.exists() and busy.exists()
