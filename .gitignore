@@ -10,3 +10,7 @@ openspec/
 .github/agents/
 .github/prompts/
 .github/skills/
+
+# editor swap files (a swap of the local `claude` settings file holds credentials)
+.*.swp
+.*.swo
